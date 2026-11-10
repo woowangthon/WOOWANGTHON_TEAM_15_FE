@@ -10,7 +10,7 @@ function readResult(raw: string): Result {
   try {
     const url = new URL(candidate);
     if (/^https?:\/\//i.test(candidate) && !/\s/.test(candidate) && url.hostname &&
-        (url.protocol === 'http:' || url.protocol === 'https:')) return { raw, url: url.href };
+      (url.protocol === 'http:' || url.protocol === 'https:')) return { raw, url: url.href };
   } catch { /* Plain text QR payload. */ }
   return { raw, url: null };
 }
@@ -23,13 +23,14 @@ export default function App() {
   const [result, setResult] = useState<Result | null>(null);
   const operation = useRef(false);
   const scanAccepted = useRef(true);
+  const API_URL = process.env.EXPO_PUBLIC_API_URL;
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
       if (state !== 'active') {
         scanAccepted.current = true;
         setScanning(false);
-      } else void refreshPermission().catch(() => {});
+      } else void refreshPermission().catch(() => { });
     });
     return () => subscription.remove();
   }, [refreshPermission]);
@@ -38,6 +39,24 @@ export default function App() {
     const timeout = setTimeout(() => setMessage('아직 QR을 찾지 못했어요. 밝은 곳에서 QR 전체가 크게 보이도록 맞춰 주세요.'), 12000);
     return () => clearTimeout(timeout);
   }, [scanning]);
+
+  async function sendToBackend(qrText: string) {
+    try {
+      const response = await fetch(`${API_URL}/api/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          qr_text: qrText,
+          brand_texts: [],
+        }),
+      });
+
+      const data = await response.json();
+      setMessage(`서버 응답: ${JSON.stringify(data)}`);
+    } catch {
+      setMessage('서버 연결에 실패했어요.');
+    }
+  }
 
   async function startCamera() {
     if (operation.current) return;
@@ -95,8 +114,10 @@ export default function App() {
         setMessage('이미지에서 QR을 찾지 못했어요. QR 전체가 선명하고 크게 나온 사진을 선택해 주세요.');
         return;
       }
-      setResult(readResult(first.data));
-      setMessage('이미지에서 QR을 읽었어요. 여러 개가 있으면 첫 번째 인식 결과만 표시해요.');
+      const parsed = readResult(first.data);
+      setResult(parsed);
+      void sendToBackend(parsed.raw);
+      setMessage('QR을 읽었어요. 아래 내용을 확인해 주세요.');
     } catch {
       setMessage('사진 선택 또는 QR 인식 중 문제가 발생했어요. 사진 접근 권한을 확인하고 다른 이미지로 다시 시도해 주세요.');
     } finally {
@@ -132,7 +153,9 @@ export default function App() {
               if (scanAccepted.current) return;
               scanAccepted.current = true;
               setScanning(false);
-              setResult(readResult(data));
+              const parsed = readResult(data);
+              setResult(parsed);
+              void sendToBackend(parsed.raw);
               setMessage('QR을 읽었어요. 아래 내용을 확인해 주세요.');
             }} />
           <Pressable accessibilityRole="button" style={styles.button} onPress={() => {

@@ -4,6 +4,16 @@ import * as ImagePicker from 'expo-image-picker';
 import { StatusBar } from 'expo-status-bar';
 import { ActivityIndicator, AppState, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { analyzeQr, type AnalyzeOutcome } from './src/api/analyze';
+import type { Store } from './src/api/stores';
+import { ExtraInfo } from './src/input/ExtraInfo';
+import { MOCK_RESULTS } from './src/mocks';
+import { ResultScreen } from './src/result/ResultScreen';
+
+// Sample result list for building the result screen. Off unless explicitly enabled in .env,
+// so it never appears in demos (Expo Go always runs in __DEV__).
+const SHOW_MOCKS = __DEV__ && process.env.EXPO_PUBLIC_SHOW_MOCKS === 'true';
+
 type Result = { raw: string; url: string | null };
 function readResult(raw: string): Result {
   const candidate = raw.trim();
@@ -21,9 +31,12 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('카메라로 스캔하거나 QR 이미지 한 장을 선택해 주세요.');
   const [result, setResult] = useState<Result | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [outcome, setOutcome] = useState<AnalyzeOutcome | null>(null);
+  const [brand, setBrand] = useState('');
+  const [store, setStore] = useState<Store | null>(null);
   const operation = useRef(false);
   const scanAccepted = useRef(true);
-  const API_URL = process.env.EXPO_PUBLIC_API_URL;
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
@@ -40,22 +53,24 @@ export default function App() {
     return () => clearTimeout(timeout);
   }, [scanning]);
 
-  async function sendToBackend(qrText: string) {
+  async function analyze(parsed: Result) {
+    setAnalyzing(true);
+    setMessage('QR 주소를 검사하고 있어요. 최대 30초 정도 걸릴 수 있어요. 사이트는 열지 않아요.');
     try {
-      const response = await fetch(`${API_URL}/api/analyze`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          qr_text: qrText,
-          brand_texts: [],
-        }),
-      });
-
-      const data = await response.json();
-      setMessage(`서버 응답: ${JSON.stringify(data)}`);
-    } catch {
-      setMessage('서버 연결에 실패했어요.');
+      const brandText = brand.trim();
+      setOutcome(await analyzeQr(parsed.raw, parsed.url, {
+        brandTexts: brandText ? [brandText] : [],
+        storeId: store?.store_id ?? null,
+      }));
+    } finally {
+      setAnalyzing(false);
     }
+  }
+
+  function backToInput() {
+    setOutcome(null);
+    setResult(null);
+    setMessage('카메라로 스캔하거나 QR 이미지 한 장을 선택해 주세요.');
   }
 
   async function startCamera() {
@@ -116,8 +131,7 @@ export default function App() {
       }
       const parsed = readResult(first.data);
       setResult(parsed);
-      void sendToBackend(parsed.raw);
-      setMessage('QR을 읽었어요. 아래 내용을 확인해 주세요.');
+      void analyze(parsed);
     } catch {
       setMessage('사진 선택 또는 QR 인식 중 문제가 발생했어요. 사진 접근 권한을 확인하고 다른 이미지로 다시 시도해 주세요.');
     } finally {
@@ -127,20 +141,30 @@ export default function App() {
   }
 
   const mobile = Platform.OS === 'android' || Platform.OS === 'ios';
+  if (outcome) {
+    return (
+      <View style={styles.screen}>
+        <StatusBar style="dark" />
+        <ResultScreen outcome={outcome} onRescan={backToInput} />
+      </View>
+    );
+  }
+  const locked = busy || analyzing;
   return (
     <View style={styles.screen}>
       <StatusBar style="dark" />
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.eyebrow}>QR ALERT</Text>
         <Text style={styles.title}>QR 입력</Text>
-        <Text style={styles.description}>QR 내용을 기기에서 읽고 확인하세요. 이미지와 인식 결과를 서버로 보내지 않아요.</Text>
-        <Pressable accessibilityRole="button" disabled={busy || !mobile || scanning} style={[styles.button, (busy || !mobile || scanning) && styles.disabled]} onPress={startCamera}>
+        <Text style={styles.description}>QR 속 주소만 검사 서버로 보내 위험한지 확인해요. 사진은 보내지 않고, 사이트도 자동으로 열지 않아요.</Text>
+        <Pressable accessibilityRole="button" disabled={locked || !mobile || scanning} style={[styles.button, (locked || !mobile || scanning) && styles.disabled]} onPress={startCamera}>
           <Text style={styles.buttonText}>{result ? '다시 스캔하기' : '카메라로 QR 스캔'}</Text>
         </Pressable>
-        <Pressable accessibilityRole="button" disabled={busy || !mobile} style={[styles.button, styles.secondary, (busy || !mobile) && styles.disabled]} onPress={pickImage}>
+        <Pressable accessibilityRole="button" disabled={locked || !mobile} style={[styles.button, styles.secondary, (locked || !mobile) && styles.disabled]} onPress={pickImage}>
           <Text style={styles.secondaryText}>사진 보관함에서 QR 이미지 선택</Text>
         </Pressable>
-        {busy && <ActivityIndicator accessibilityLabel="처리 중" color="#2256CF" />}
+        <ExtraInfo brand={brand} onBrandChange={setBrand} store={store} onStoreChange={setStore} disabled={locked} />
+        {locked && <ActivityIndicator accessibilityLabel={analyzing ? '주소 검사 중' : '처리 중'} color="#2256CF" />}
         <Text accessibilityLiveRegion="polite" style={styles.message}>{mobile ? message : 'QR 입력은 Android 또는 iOS 기기의 Expo Go에서 사용해 주세요.'}</Text>
         {scanning && permission?.granted && <View style={styles.card}>
           <CameraView style={styles.camera} facing="back" barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
@@ -155,8 +179,7 @@ export default function App() {
               setScanning(false);
               const parsed = readResult(data);
               setResult(parsed);
-              void sendToBackend(parsed.raw);
-              setMessage('QR을 읽었어요. 아래 내용을 확인해 주세요.');
+              void analyze(parsed);
             }} />
           <Pressable accessibilityRole="button" style={styles.button} onPress={() => {
             scanAccepted.current = true;
@@ -170,6 +193,15 @@ export default function App() {
           <Text style={styles.heading}>추출한 URL (HTTP/HTTPS)</Text>
           <Text selectable style={styles.value}>{result.url ?? '유효한 웹 URL이 아니에요.'}</Text>
           <Text style={styles.note}>URL은 텍스트로만 표시하며 사이트를 열거나 접속하지 않아요.</Text>
+        </View>}
+        {SHOW_MOCKS && <View style={styles.card}>
+          <Text style={styles.heading}>개발용 · 샘플 결과 화면 보기</Text>
+          <Text style={styles.note}>.env의 EXPO_PUBLIC_SHOW_MOCKS=true일 때만 보여요. 시연 전에 false로 바꾸세요.</Text>
+          {MOCK_RESULTS.map((mock) => (
+            <Pressable key={mock.label} accessibilityRole="button" style={styles.mockButton} onPress={() => setOutcome(mock.outcome)}>
+              <Text style={styles.secondaryText}>{mock.label}</Text>
+            </Pressable>
+          ))}
         </View>}
         <View style={styles.card}>
           <Text style={styles.heading}>상표명 OCR · 현재 미지원</Text>
@@ -197,4 +229,5 @@ const styles = StyleSheet.create({
   heading: { fontSize: 16, fontWeight: '700', color: '#152443' },
   value: { fontSize: 15, lineHeight: 24, color: '#263955' },
   note: { fontSize: 14, lineHeight: 23, color: '#52617B' },
+  mockButton: { backgroundColor: '#E1E9FB', borderRadius: 12, padding: 12, alignItems: 'center' },
 });

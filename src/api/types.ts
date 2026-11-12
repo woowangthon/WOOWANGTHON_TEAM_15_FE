@@ -80,4 +80,8 @@ export type AnalyzeResponse = {
   // Optional so responses from older backends still parse.
   explanation?: string;
   explanation_status?: AiStatus;
+  // Why no AI explanation was made (blocked target, or AI unavailable). Shown in the AI card instead.
+  explanation_skip_reason?: string | null;
+  // Overall verdict (combined-v1): behavior-v1 points + URL/brand/store signals. Drives the banner.
+  verdict?: { version: 'combined-v1'; score: number | null; level: Level; reasons: { code: string; points: number; message: string }[] };
 };

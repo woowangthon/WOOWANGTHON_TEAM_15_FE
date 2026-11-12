@@ -1,10 +1,11 @@
-import type { AnalyzeResponse, AttackType, Severity } from '../api/types';
+import type { AnalyzeResponse, AttackType, Level, Severity } from '../api/types';
 
 // Turns the backend response into what the result screen shows.
-// The backend score (AI behavior + TLS + domain age) deliberately excludes URL/brand/store signals,
-// so the warning tone here is the worse of the score level and those signals. The score itself is shown unchanged.
+// Banner and score come from the backend's combined-v1 verdict; the check list explains each item.
+// Check badges follow the same point bands (>=50 위험 → danger, otherwise caution).
 
 export type Tone = 'danger' | 'caution' | 'unknown' | 'low';
+const LEVEL_TONE: Record<Level, Tone> = { 위험: 'danger', 주의: 'caution', 낮음: 'low', '확인 불가': 'unknown' };
 export type CheckTone = 'danger' | 'caution' | 'ok' | 'unknown' | 'info';
 export type CheckItem = { key: string; label: string; tone: CheckTone; detail: string };
 
@@ -12,6 +13,7 @@ export type Verdict = {
   tone: Tone;
   title: string;
   summary: string;
+  score: number | null;
   reasons: string[];
   checks: CheckItem[];
   canOpen: boolean;
@@ -39,7 +41,7 @@ function domainAgeCheck(d: AnalyzeResponse): CheckItem {
   if (rdap.status === 'ok' && typeof rdap.age_days === 'number') {
     const date = rdap.created_at ? ` (${rdap.created_at.slice(0, 10)})` : '';
     const when = `${formatAge(rdap.age_days)} 생성${date}`;
-    if (rdap.age_days < 30) return { key: 'age', label, tone: 'danger', detail: `최근에 만들어진 도메인이에요. ${when}` };
+    if (rdap.age_days < 30) return { key: 'age', label, tone: 'caution', detail: `최근에 만들어진 도메인이에요. ${when}` };
     if (rdap.age_days < 180) return { key: 'age', label, tone: 'caution', detail: `만들어진 지 얼마 안 된 도메인이에요. ${when}` };
     return { key: 'age', label, tone: 'ok', detail: when };
   }
@@ -53,7 +55,7 @@ function tlsCheck(d: AnalyzeResponse): CheckItem {
     return { key: 'tls', label, tone: 'caution', detail: '암호화되지 않은 HTTP 주소예요. 입력한 정보가 노출될 수 있어요.' };
   }
   const tls = d.evidence.tls;
-  if (tls.status === 'invalid') return { key: 'tls', label, tone: 'danger', detail: '보안 인증서 검증에 실패했어요.' };
+  if (tls.status === 'invalid') return { key: 'tls', label, tone: 'caution', detail: '보안 인증서 검증에 실패했어요.' };
   if (tls.status === 'ok') {
     return { key: 'tls', label, tone: 'ok', detail: tls.issuer ? `유효한 인증서예요. (발급: ${tls.issuer})` : '유효한 인증서예요.' };
   }
@@ -144,7 +146,7 @@ function pageCheck(d: AnalyzeResponse): CheckItem {
   }
   const name = ATTACK_NAMES[worst.type];
   if (worst.severity === 'strong') return { key: 'page', label, tone: 'danger', detail: `${name} 내용이 강하게 의심돼요.` };
-  if (worst.severity === 'moderate') return { key: 'page', label, tone: 'danger', detail: `${name} 내용이 있어요.` };
+  if (worst.severity === 'moderate') return { key: 'page', label, tone: 'caution', detail: `${name} 내용이 있어요.` };
   return { key: 'page', label, tone: 'caution', detail: `${name} 내용이 약하게 보여요.` };
 }
 
@@ -164,12 +166,16 @@ export function buildVerdict(d: AnalyzeResponse, brandTexts: string[] = []): Ver
   checks.push(downloadCheck(d), brandCheck(d, brandTexts),...(store ? [store] : []), urlShapeCheck(d),
     domainAgeCheck(d), tlsCheck(d), locationCheck(d), pageCheck(d));
 
+  // The backend's combined-v1 verdict is the single source of truth for the banner and score.
+  // Older backends without it fall back to the worse of behavior-v1 level and the check badges.
   const has = (t: CheckTone) => checks.some((c) => c.tone === t);
-  const tone: Tone =
-    blocked || d.level === '위험' || has('danger') ? 'danger'
+  const tone: Tone = d.verdict
+    ? LEVEL_TONE[d.verdict.level]
+    : blocked || d.level === '위험' || has('danger') ? 'danger'
       : d.level === '주의' || has('caution') ? 'caution'
         : d.level === '낮음' ? 'low'
           : 'unknown';
+  const score = d.verdict ? d.verdict.score : d.score;
 
   const reasons = [...checks.filter((c) => c.tone === 'danger'), ...checks.filter((c) => c.tone === 'caution')]
     .map((c) => c.detail);
@@ -182,5 +188,5 @@ export function buildVerdict(d: AnalyzeResponse, brandTexts: string[] = []): Ver
   };
 
   const finalUrl = d.page?.final_url && d.page.final_url !== d.url ? d.page.final_url : null;
-  return { tone, ...copy[tone], reasons, checks, canOpen: !blocked, finalUrl };
+  return { tone, ...copy[tone], score, reasons, checks, canOpen: !blocked, finalUrl };
 }

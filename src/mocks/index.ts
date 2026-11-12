@@ -33,6 +33,15 @@ const aiPhishing: AnalyzeResponse = {
     { type: 'unsafe_installation', severity: 'none', evidence_ids: [] },
   ],
   page: normalData.page && { ...normalData.page, final_url: 'https://secure-login-check.example/verify', ai_status: 'generated' },
+  verdict: {
+    version: 'combined-v1',
+    score: 75,
+    level: '위험',
+    reasons: [
+      { code: 'AI_CREDENTIAL_THEFT_STRONG', points: 60, message: '인증정보 탈취 관련 행동 신호: strong' },
+      { code: 'NEW_DOMAIN', points: 15, message: '도메인이 생성된 지 30일 미만입니다.' },
+    ],
+  },
   explanation_status: 'generated',
   explanation: '이 페이지는 계정이 곧 정지된다며 비밀번호와 인증번호를 바로 입력하라고 재촉하고 있어요. 사이트 주소도 만들어진 지 9일밖에 안 됐어요. 비밀번호나 인증번호를 입력하지 말고, 공식 앱으로 직접 들어가 확인하세요.',
 };

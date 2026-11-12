@@ -38,8 +38,8 @@ function AnalysisResult({ data, brandTexts, onRescan }: { data: AnalyzeResponse;
         <Text style={[styles.bannerTitle, { color: colors.fg }]}>{verdict.title}</Text>
         <Text style={[styles.bannerSummary, { color: colors.fg }]}>{verdict.summary}</Text>
         <Text style={styles.score}>
-          위험 점수 {data.score === null ? '산출 불가' : `${data.score}점`}
-          <Text style={styles.scoreNote}>  (AI 내용 분석·인증서·도메인 생성일 기준)</Text>
+          위험 점수 {verdict.score === null ? '산출 불가' : `${verdict.score}점`}
+          <Text style={styles.scoreNote}>  {data.verdict ? '(주소·상표·페이지 내용·인증서·도메인 종합)' : '(AI 내용 분석·인증서·도메인 생성일 기준)'}</Text>
         </Text>
       </View>
 
@@ -53,13 +53,18 @@ function AnalysisResult({ data, brandTexts, onRescan }: { data: AnalyzeResponse;
         <Text style={styles.note}>주소는 글자로만 보여주고, 사이트는 열지 않았어요.</Text>
       </View>
 
-      {(data.explanation_status === 'generated' || data.explanation_status === 'cached') && data.explanation && (
+      {(data.explanation_status === 'generated' || data.explanation_status === 'cached') && data.explanation ? (
         <View style={styles.card}>
           <Text style={styles.heading}>AI 설명</Text>
           <Text style={styles.reason}>{data.explanation}</Text>
           <Text style={styles.aiNote}>AI가 검사 결과를 쉽게 풀어 쓴 설명이에요. 판정은 위 검사 결과를 따라요.</Text>
         </View>
-      )}
+      ) : (data.explanation_status === 'skipped' || data.explanation_status === 'unavailable') && data.explanation_skip_reason ? (
+        <View style={styles.card}>
+          <Text style={styles.heading}>AI 설명</Text>
+          <Text style={styles.aiNote}>{data.explanation_skip_reason}</Text>
+        </View>
+      ) : null}
 
       {verdict.reasons.length > 0 && <View style={styles.card}>
         <Text style={styles.heading}>이렇게 판단했어요</Text>

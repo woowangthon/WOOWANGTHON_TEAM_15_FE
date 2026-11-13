@@ -121,8 +121,11 @@ function domainWordsCheck(d: AnalyzeResponse): CheckItem | null {
   if (!check) return null;
   const label = '주소 속 상표·의심 단어';
   if (check.brand_in_domain) {
-    const { word, official } = check.brand_in_domain;
-    return { key: 'words', label, tone: 'danger', detail: `주소에 '${word}'가 들어 있지만 공식 주소(${official.join(', ')})가 아니에요. 상표를 흉내 낸 주소일 수 있어요.` };
+    const { word, official, match, found } = check.brand_in_domain;
+    const detail = match === 'lookalike'
+      ? `주소의 '${found}'가 '${word}'와 비슷하게 생겼지만 공식 주소(${official.join(', ')})가 아니에요. 글자를 바꿔 상표를 흉내 낸 주소일 수 있어요.`
+      : `주소에 '${word}'가 들어 있지만 공식 주소(${official.join(', ')})가 아니에요. 상표를 흉내 낸 주소일 수 있어요.`;
+    return { key: 'words', label, tone: 'danger', detail };
   }
   if (check.domain_keywords.length) {
     return { key: 'words', label, tone: 'caution', detail: `주소 이름에 '${check.domain_keywords.join(', ')}' 같은 낚시성 단어가 들어 있어요.` };

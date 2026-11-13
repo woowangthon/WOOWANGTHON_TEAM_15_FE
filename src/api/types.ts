@@ -84,7 +84,7 @@ export type AnalyzeResponse = {
   printed_domain_check?: { status: 'matched' | 'mismatched' | 'not_checked'; printed: string[]; qr_domain: string | null };
   // Brand / phishing words inside a non-official domain name (P1-8). Optional for older backends.
   domain_keyword_check?: {
-    brand_in_domain: { word: string; official: string[] } | null;
+    brand_in_domain: { word: string; official: string[]; match?: 'contains' | 'lookalike'; found?: string | null } | null;
     domain_keywords: string[];
     path_keywords: string[];
   };

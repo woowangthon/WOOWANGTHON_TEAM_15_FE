@@ -1,25 +1,74 @@
+import * as ImagePicker from 'expo-image-picker';
 import { useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { readBrandsFromPhoto, type BrandCandidate } from '../api/ocr';
+import { photoForOcr } from '../api/photo';
 import { searchStores, type Store } from '../api/stores';
 
 // Optional context sent with the QR URL:
-// - brand name: compared against the official-domain DB (to be filled by OCR once task 1 lands)
+// - brand name: typed, or picked from candidates the server reads from a photo (OCR)
 // - store: compared against the store's registered QR address
+// - printed addresses: web addresses printed next to the QR (from a photo), compared with the QR address
 type Props = {
   brand: string;
   onBrandChange: (value: string) => void;
   store: Store | null;
   onStoreChange: (store: Store | null) => void;
+  printedDomains: string[];
+  onPrintedDomainsChange: (domains: string[]) => void;
   disabled?: boolean;
 };
 
-export function ExtraInfo({ brand, onBrandChange, store, onStoreChange, disabled }: Props) {
+export function ExtraInfo({
+  brand, onBrandChange, store, onStoreChange, printedDomains, onPrintedDomainsChange, disabled,
+}: Props) {
   const [open, setOpen] = useState(false);
   const [keyword, setKeyword] = useState('');
   const [results, setResults] = useState<Store[] | null>(null);
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reading, setReading] = useState(false);
+  const [candidates, setCandidates] = useState<BrandCandidate[]>([]);
+  const [ocrMessage, setOcrMessage] = useState<string | null>(null);
+
+  // Photo → server vision AI → brand-name candidates the person picks from. Nothing is filled in automatically.
+  async function readFromPhoto(source: 'camera' | 'library') {
+    setOcrMessage(null);
+    setCandidates([]);
+    try {
+      if (source === 'camera') {
+        const permission = await ImagePicker.requestCameraPermissionsAsync();
+        if (!permission.granted) {
+          setOcrMessage('카메라 권한이 없어요. 앨범에서 찾거나 상표명을 직접 입력해 주세요.');
+          return;
+        }
+      }
+      // Cropping limits the upload to the brand area; photoForOcr then downscales it.
+      const options: ImagePicker.ImagePickerOptions = { mediaTypes: ['images'], allowsEditing: true, quality: 0.9 };
+      const picked = source === 'camera'
+        ? await ImagePicker.launchCameraAsync(options)
+        : await ImagePicker.launchImageLibraryAsync(options);
+      if (picked.canceled) return;
+      const uri = picked.assets[0]?.uri;
+      const base64 = uri ? await photoForOcr(uri) : null;
+      if (!base64) {
+        setOcrMessage('사진을 읽지 못했어요. 다른 사진으로 다시 시도해 주세요.');
+        return;
+      }
+      setReading(true);
+      const result = await readBrandsFromPhoto(base64);
+      setCandidates(result.brands);
+      setOcrMessage(result.message);
+      if (result.domains.length) {
+        onPrintedDomainsChange([...new Set([...printedDomains, ...result.domains.map((d) => d.domain)])]);
+      }
+    } catch {
+      setOcrMessage('사진을 가져오지 못했어요. 상표명을 직접 입력해 주세요.');
+    } finally {
+      setReading(false);
+    }
+  }
 
   async function search() {
     const query = keyword.trim();
@@ -36,7 +85,11 @@ export function ExtraInfo({ brand, onBrandChange, store, onStoreChange, disabled
     }
   }
 
-  const filled = [brand.trim() && `상표: ${brand.trim()}`, store && `매장: ${store.store_name}`].filter(Boolean).join(' · ');
+  const filled = [
+    brand.trim() && `상표: ${brand.trim()}`,
+    store && `매장: ${store.store_name}`,
+    printedDomains.length > 0 && `안내문 주소: ${printedDomains.join(', ')}`,
+  ].filter(Boolean).join(' · ');
   return (
     <View style={styles.card}>
       <Pressable accessibilityRole="button" style={styles.header} onPress={() => setOpen((v) => !v)}>
@@ -58,7 +111,43 @@ export function ExtraInfo({ brand, onBrandChange, store, onStoreChange, disabled
           style={styles.input}
           accessibilityLabel="상표명"
         />
-        <Text style={styles.hint}>입력한 상표의 공식 도메인과 QR 주소를 비교해요. 사진 속 상표명 자동 인식(OCR)은 아직 지원하지 않아요.</Text>
+        <Text style={styles.hint}>입력한 상표의 공식 도메인과 QR 주소를 비교해요.</Text>
+
+        <View style={styles.searchRow}>
+          <Pressable accessibilityRole="button" disabled={disabled || reading} style={[styles.photoButton, (disabled || reading) && styles.disabled]} onPress={() => readFromPhoto('camera')}>
+            <Text style={styles.searchButtonText}>사진 찍어서 찾기</Text>
+          </Pressable>
+          <Pressable accessibilityRole="button" disabled={disabled || reading} style={[styles.photoButton, (disabled || reading) && styles.disabled]} onPress={() => readFromPhoto('library')}>
+            <Text style={styles.searchButtonText}>앨범에서 찾기</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.hint}>상표가 보이는 부분만 잘라 주세요. 사진은 상표명을 읽는 데만 AI 서버로 보내고 저장하지 않아요.</Text>
+        {reading && <ActivityIndicator accessibilityLabel="사진에서 상표명 읽는 중" color="#2256CF" />}
+        {ocrMessage && <Text style={styles.hint}>{ocrMessage}</Text>}
+        {candidates.length > 0 && <>
+          <Text style={styles.hint}>찾은 상표명 후보예요. 맞는 이름을 눌러 주세요.</Text>
+          <View style={styles.chips}>
+            {candidates.map((c) => (
+              <Pressable key={c.name} accessibilityRole="button" disabled={disabled}
+                style={[styles.chip, brand.trim() === c.name && styles.chipSelected]}
+                onPress={() => { onBrandChange(c.name); setCandidates([]); setOcrMessage(null); }}>
+                <Text style={styles.chipText}>{c.name}</Text>
+                {!c.registered && <Text style={styles.chipNote}>공식 도메인 미등록</Text>}
+              </Pressable>
+            ))}
+          </View>
+        </>}
+        {printedDomains.length > 0 && (
+          <View style={styles.selected}>
+            <View style={styles.headerText}>
+              <Text style={styles.hint}>사진 속 안내문에 적힌 주소 (QR 주소와 비교해요)</Text>
+              <Text style={styles.selectedText}>{printedDomains.join(', ')}</Text>
+            </View>
+            <Pressable accessibilityRole="button" disabled={disabled} onPress={() => onPrintedDomainsChange([])}>
+              <Text style={styles.toggle}>지우기</Text>
+            </Pressable>
+          </View>
+        )}
 
         <Text style={styles.label}>매장</Text>
         {store
@@ -118,4 +207,11 @@ const styles = StyleSheet.create({
   selectedText: { fontSize: 15, fontWeight: '600', color: '#152443' },
   result: { padding: 12, borderRadius: 12, borderWidth: 1, borderColor: '#DCE2EC', gap: 2 },
   error: { fontSize: 13, color: '#B42318' },
+  photoButton: { flex: 1, backgroundColor: '#E1E9FB', borderRadius: 12, padding: 12, alignItems: 'center' },
+  disabled: { opacity: 0.45 },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  chip: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: 999, borderWidth: 1, borderColor: '#C9D1DE', backgroundColor: '#FFFFFF' },
+  chipSelected: { borderColor: '#2256CF', backgroundColor: '#EEF3FD' },
+  chipText: { fontSize: 15, fontWeight: '600', color: '#152443' },
+  chipNote: { fontSize: 11, color: '#6B778C' },
 });

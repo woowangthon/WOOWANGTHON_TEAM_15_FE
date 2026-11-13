@@ -3,13 +3,20 @@ import type { AnalyzeResponse } from './types';
 // Page fetch (up to 18s) + AI call can take a while; give up after this.
 const TIMEOUT_MS = 45_000;
 
+// What the optional QR-photo lookup (brand + printed address) found, so the result screen can say so,
+// including when it found nothing or had to be skipped.
+export type PhotoNote =
+  | { kind: 'found'; brands: string[]; domains: string[]; usedBrand: string | null }
+  | { kind: 'none' }
+  | { kind: 'skipped'; reason: string };
+
 export type AnalyzeOutcome =
-  // brandTexts: what the user (or later OCR) sent, so the screen can tell "not entered" from "not registered".
-  | { kind: 'analysis'; data: AnalyzeResponse; brandTexts: string[] }
+  // brandTexts: what the user (or OCR) sent, so the screen can tell "not entered" from "not registered".
+  | { kind: 'analysis'; data: AnalyzeResponse; brandTexts: string[]; photo?: PhotoNote }
   | { kind: 'not_url'; raw: string }
   | { kind: 'error'; raw: string; message: string };
 
-export type AnalyzeOptions = { brandTexts?: string[]; storeId?: string | null };
+export type AnalyzeOptions = { brandTexts?: string[]; storeId?: string | null; printedDomains?: string[] };
 
 export async function analyzeQr(raw: string, url: string | null, options: AnalyzeOptions = {}): Promise<AnalyzeOutcome> {
   // Plain-text QR payloads never reach the server: the API only accepts HTTP(S) URLs.
@@ -31,6 +38,7 @@ export async function analyzeQr(raw: string, url: string | null, options: Analyz
         qr_text: url,
         brand_texts: options.brandTexts ?? [],
         store_id: options.storeId ?? null,
+        printed_domains: options.printedDomains ?? [],
         include_ai: true,
         inspect_page: true,
         include_explanation: true,

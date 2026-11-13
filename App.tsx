@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ComponentRef } from 'react';
 import { CameraView, scanFromURLAsync, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import { StatusBar } from 'expo-status-bar';
-import { ActivityIndicator, AppState, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, BackHandler, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
-import { analyzeQr, type AnalyzeOutcome } from './src/api/analyze';
+import { analyzeQr, type AnalyzeOutcome, type PhotoNote } from './src/api/analyze';
+import { readBrandsFromPhoto } from './src/api/ocr';
+import { photoForOcr } from './src/api/photo';
 import type { Store } from './src/api/stores';
 import { ExtraInfo } from './src/input/ExtraInfo';
 import { MOCK_RESULTS } from './src/mocks';
@@ -35,8 +37,13 @@ export default function App() {
   const [outcome, setOutcome] = useState<AnalyzeOutcome | null>(null);
   const [brand, setBrand] = useState('');
   const [store, setStore] = useState<Store | null>(null);
+  const [printedDomains, setPrintedDomains] = useState<string[]>([]);
+  // Off by default (not saved): when on, a QR picked from the album is also sent to read brand/printed addresses.
+  const [photoAssist, setPhotoAssist] = useState(false);
   const operation = useRef(false);
   const scanAccepted = useRef(true);
+  // RN 0.88's ScrollView is a function component; take the instance type from its ref prop.
+  const scrollRef = useRef<ComponentRef<typeof ScrollView>>(null);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
@@ -52,18 +59,62 @@ export default function App() {
     const timeout = setTimeout(() => setMessage('아직 QR을 찾지 못했어요. 밝은 곳에서 QR 전체가 크게 보이도록 맞춰 주세요.'), 12000);
     return () => clearTimeout(timeout);
   }, [scanning]);
+  // Android back: result → input screen, live scan → stop, while analyzing → ignore. Only the input screen exits.
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (outcome) {
+        backToInput();
+        return true;
+      }
+      if (scanning) {
+        scanAccepted.current = true;
+        setScanning(false);
+        setMessage('카메라 스캔을 중지했어요. 다시 스캔하거나 사진을 선택해 주세요.');
+        return true;
+      }
+      return analyzing;
+    });
+    return () => subscription.remove();
+  }, [outcome, scanning, analyzing]);
 
-  async function analyze(parsed: Result) {
+  // photoUri: the QR photo itself, only when the person turned on photoAssist.
+  async function analyze(parsed: Result, photoUri?: string) {
     setAnalyzing(true);
-    setMessage('QR 주소를 검사하고 있어요. 최대 30초 정도 걸릴 수 있어요. 사이트는 열지 않아요.');
     try {
-      const brandText = brand.trim();
-      setOutcome(await analyzeQr(parsed.raw, parsed.url, {
+      let brandText = brand.trim();
+      let domains = printedDomains;
+      let photo: PhotoNote | undefined;
+      if (photoUri && parsed.url) {
+        setMessage('사진에서 상표명과 안내문에 적힌 주소를 찾고 있어요.');
+        const base64 = await photoForOcr(photoUri);
+        const found = base64 ? await readBrandsFromPhoto(base64) : null;
+        if (!found) {
+          photo = { kind: 'skipped', reason: '사진을 읽지 못했어요.' };
+        } else if (found.status !== 'ok') {
+          photo = { kind: 'skipped', reason: found.message ?? '사진을 처리하지 못했어요.' };
+        } else if (!found.brands.length && !found.domains.length) {
+          photo = { kind: 'none' };
+        } else {
+          // A typed brand wins; otherwise use the best candidate (registered names come first).
+          const usedBrand = brandText ? null : found.brands[0]?.name ?? null;
+          brandText = brandText || usedBrand || '';
+          domains = [...new Set([...domains, ...found.domains.map((d) => d.domain)])];
+          photo = { kind: 'found', brands: found.brands.map((b) => b.name), domains: found.domains.map((d) => d.domain), usedBrand };
+        }
+      }
+      setMessage('QR 주소를 검사하고 있어요. 최대 30초 정도 걸릴 수 있어요. 사이트는 열지 않아요.');
+      const outcome = await analyzeQr(parsed.raw, parsed.url, {
         brandTexts: brandText ? [brandText] : [],
         storeId: store?.store_id ?? null,
-      }));
+        printedDomains: domains,
+      });
+      setOutcome(outcome.kind === 'analysis' ? { ...outcome, photo } : outcome);
     } finally {
       setAnalyzing(false);
+      // Brand/store/printed addresses describe the QR just scanned; clear them so the next scan starts empty.
+      setBrand('');
+      setStore(null);
+      setPrintedDomains([]);
     }
   }
 
@@ -71,6 +122,36 @@ export default function App() {
     setOutcome(null);
     setResult(null);
     setMessage('카메라로 스캔하거나 QR 이미지 한 장을 선택해 주세요.');
+  }
+
+  // photoAssist on: take one photo (with crop) instead of live scanning, read the QR from it on the phone,
+  // and send the cropped photo to find the brand and printed addresses next to the QR.
+  async function capturePhoto() {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      setMessage('카메라 권한이 없어요. 기기 설정에서 허용하거나 사진을 선택해 주세요.');
+      return;
+    }
+    setMessage('QR과 주변 안내문이 같이 나오게 찍고, 자를 때 QR이 꼭 들어가게 해 주세요.');
+    const shot = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 0.9 });
+    if (shot.canceled) {
+      setMessage('촬영을 취소했어요. 다시 찍거나 사진을 선택해 주세요.');
+      return;
+    }
+    const asset = shot.assets[0];
+    if (!asset?.uri || !/^(file|content):\/\//i.test(asset.uri)) {
+      setMessage('찍은 사진을 읽지 못했어요. 다시 찍어 주세요.');
+      return;
+    }
+    setMessage('찍은 사진에서 QR을 읽고 있어요.');
+    const first = (await scanFromURLAsync(asset.uri, ['qr']))[0];
+    if (!first) {
+      setMessage('사진에서 QR을 찾지 못했어요. 자를 때 QR 전체가 들어가게 다시 찍어 주세요.');
+      return;
+    }
+    const parsed = readResult(first.data);
+    setResult(parsed);
+    void analyze(parsed, asset.uri);
   }
 
   async function startCamera() {
@@ -86,6 +167,10 @@ export default function App() {
         setMessage(next.canAskAgain
           ? '카메라 권한이 거부되었어요. 스캔 버튼을 눌러 다시 허용하거나 사진을 선택해 주세요.'
           : '카메라 권한이 거부되었어요. 기기 설정에서 이 앱의 카메라 권한을 허용한 뒤 다시 시도해 주세요. 사진 선택도 가능해요.');
+        return;
+      }
+      if (photoAssist) {
+        await capturePhoto();
         return;
       }
       scanAccepted.current = false;
@@ -131,7 +216,8 @@ export default function App() {
       }
       const parsed = readResult(first.data);
       setResult(parsed);
-      void analyze(parsed);
+      // The photo leaves the phone only when photoAssist is on.
+      void analyze(parsed, photoAssist ? uri : undefined);
     } catch {
       setMessage('사진 선택 또는 QR 인식 중 문제가 발생했어요. 사진 접근 권한을 확인하고 다른 이미지로 다시 시도해 주세요.');
     } finally {
@@ -153,20 +239,25 @@ export default function App() {
   return (
     <View style={styles.screen}>
       <StatusBar style="dark" />
-      <ScrollView contentContainerStyle={styles.content}>
+      <ScrollView ref={scrollRef} contentContainerStyle={styles.content}>
         <Text style={styles.eyebrow}>QR ALERT</Text>
         <Text style={styles.title}>QR 입력</Text>
-        <Text style={styles.description}>QR 속 주소만 검사 서버로 보내 위험한지 확인해요. 사진은 보내지 않고, 사이트도 자동으로 열지 않아요.</Text>
+        <Text style={styles.description}>
+          {photoAssist
+            ? 'QR 주소와 QR 사진을 검사 서버로 보내 위험한지 확인해요. 사이트는 자동으로 열지 않아요.'
+            : 'QR 속 주소만 검사 서버로 보내 위험한지 확인해요. QR 사진은 보내지 않고, 사이트도 자동으로 열지 않아요.'}
+        </Text>
         <Pressable accessibilityRole="button" disabled={locked || !mobile || scanning} style={[styles.button, (locked || !mobile || scanning) && styles.disabled]} onPress={startCamera}>
-          <Text style={styles.buttonText}>{result ? '다시 스캔하기' : '카메라로 QR 스캔'}</Text>
+          <Text style={styles.buttonText}>{photoAssist ? '카메라로 QR 사진 찍기' : result ? '다시 스캔하기' : '카메라로 QR 스캔'}</Text>
         </Pressable>
         <Pressable accessibilityRole="button" disabled={locked || !mobile} style={[styles.button, styles.secondary, (locked || !mobile) && styles.disabled]} onPress={pickImage}>
           <Text style={styles.secondaryText}>사진 보관함에서 QR 이미지 선택</Text>
         </Pressable>
-        <ExtraInfo brand={brand} onBrandChange={setBrand} store={store} onStoreChange={setStore} disabled={locked} />
-        {locked && <ActivityIndicator accessibilityLabel={analyzing ? '주소 검사 중' : '처리 중'} color="#2256CF" />}
-        <Text accessibilityLiveRegion="polite" style={styles.message}>{mobile ? message : 'QR 입력은 Android 또는 iOS 기기의 Expo Go에서 사용해 주세요.'}</Text>
-        {scanning && permission?.granted && <View style={styles.card}>
+        {/* Live camera sits right under the input buttons so it is on screen without scrolling. */}
+        {scanning && permission?.granted && <View style={styles.card}
+          // Scroll so the camera card is at the top of the screen as soon as it is laid out.
+          onLayout={(e) => scrollRef.current?.scrollTo({ y: Math.max(0, e.nativeEvent.layout.y - 16), animated: true })}>
+          <Text accessibilityLiveRegion="polite" style={styles.message}>{message}</Text>
           <CameraView style={styles.camera} facing="back" barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
             onMountError={() => {
               scanAccepted.current = true;
@@ -187,26 +278,41 @@ export default function App() {
             setMessage('카메라 스캔을 중지했어요. 다시 스캔하거나 사진을 선택해 주세요.');
           }}><Text style={styles.buttonText}>스캔 중지</Text></Pressable>
         </View>}
-        {result && <View style={styles.card}>
-          <Text style={styles.heading}>QR 원본 문자열</Text>
-          <Text selectable style={styles.value}>{result.raw === '' ? '(빈 문자열)' : result.raw}</Text>
-          <Text style={styles.heading}>추출한 URL (HTTP/HTTPS)</Text>
-          <Text selectable style={styles.value}>{result.url ?? '유효한 웹 URL이 아니에요.'}</Text>
-          <Text style={styles.note}>URL은 텍스트로만 표시하며 사이트를 열거나 접속하지 않아요.</Text>
-        </View>}
-        {SHOW_MOCKS && <View style={styles.card}>
-          <Text style={styles.heading}>개발용 · 샘플 결과 화면 보기</Text>
-          <Text style={styles.note}>.env의 EXPO_PUBLIC_SHOW_MOCKS=true일 때만 보여요. 시연 전에 false로 바꾸세요.</Text>
-          {MOCK_RESULTS.map((mock) => (
-            <Pressable key={mock.label} accessibilityRole="button" style={styles.mockButton} onPress={() => setOutcome(mock.outcome)}>
-              <Text style={styles.secondaryText}>{mock.label}</Text>
-            </Pressable>
-          ))}
-        </View>}
-        <View style={styles.card}>
-          <Text style={styles.heading}>상표명 OCR · 현재 미지원</Text>
-          <Text style={styles.note}>현재 Expo Go 구성에서는 사진의 상표명을 읽는 OCR을 제공하지 않아요. 기기 내 OCR에는 별도 네이티브 모듈과 개발 빌드 검토가 필요해요. 사진은 전송하지 않으며 OCR 결과는 생성하지 않아요.</Text>
-        </View>
+        {/* While the live camera is open, show only the camera; the rest comes back when scanning stops. */}
+        {!scanning && <>
+          <View style={[styles.switchCard, photoAssist && styles.switchCardOn]}>
+            <View style={styles.switchText}>
+              <Text style={styles.heading}>QR 사진으로 상표·주소도 찾기</Text>
+              <Text style={styles.note}>
+                {photoAssist
+                  ? '켜짐: 카메라 버튼은 사진 촬영으로 바뀌어요. 찍은 뒤 QR과 안내문이 들어가게 잘라 주세요. QR 사진이 AI 서버로 전송되며 저장하지 않아요.'
+                  : '켜면 QR 사진에서 상표명과 안내문에 적힌 주소를 찾아, QR 주소와 같은 곳인지 비교해요.'}
+              </Text>
+            </View>
+            <Switch value={photoAssist} onValueChange={setPhotoAssist} disabled={locked || scanning}
+              accessibilityLabel="QR 사진으로 상표와 주소도 찾기" />
+          </View>
+          <ExtraInfo brand={brand} onBrandChange={setBrand} store={store} onStoreChange={setStore}
+            printedDomains={printedDomains} onPrintedDomainsChange={setPrintedDomains} disabled={locked} />
+          {locked && <ActivityIndicator accessibilityLabel={analyzing ? '주소 검사 중' : '처리 중'} color="#2256CF" />}
+          <Text accessibilityLiveRegion="polite" style={styles.message}>{mobile ? message : 'QR 입력은 Android 또는 iOS 기기의 Expo Go에서 사용해 주세요.'}</Text>
+          {result && <View style={styles.card}>
+            <Text style={styles.heading}>QR 원본 문자열</Text>
+            <Text selectable style={styles.value}>{result.raw === '' ? '(빈 문자열)' : result.raw}</Text>
+            <Text style={styles.heading}>추출한 URL (HTTP/HTTPS)</Text>
+            <Text selectable style={styles.value}>{result.url ?? '유효한 웹 URL이 아니에요.'}</Text>
+            <Text style={styles.note}>URL은 텍스트로만 표시하며 사이트를 열거나 접속하지 않아요.</Text>
+          </View>}
+          {SHOW_MOCKS && <View style={styles.card}>
+            <Text style={styles.heading}>개발용 · 샘플 결과 화면 보기</Text>
+            <Text style={styles.note}>.env의 EXPO_PUBLIC_SHOW_MOCKS=true일 때만 보여요. 시연 전에 false로 바꾸세요.</Text>
+            {MOCK_RESULTS.map((mock) => (
+              <Pressable key={mock.label} accessibilityRole="button" style={styles.mockButton} onPress={() => setOutcome(mock.outcome)}>
+                <Text style={styles.secondaryText}>{mock.label}</Text>
+              </Pressable>
+            ))}
+          </View>}
+        </>}
       </ScrollView>
     </View>
   );
@@ -229,5 +335,8 @@ const styles = StyleSheet.create({
   heading: { fontSize: 16, fontWeight: '700', color: '#152443' },
   value: { fontSize: 15, lineHeight: 24, color: '#263955' },
   note: { fontSize: 14, lineHeight: 23, color: '#52617B' },
+  switchCard: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 16, borderRadius: 16, backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#DCE2EC' },
+  switchCardOn: { borderColor: '#2256CF', backgroundColor: '#EEF3FD' },
+  switchText: { flex: 1, gap: 4 },
   mockButton: { backgroundColor: '#E1E9FB', borderRadius: 12, padding: 12, alignItems: 'center' },
 });

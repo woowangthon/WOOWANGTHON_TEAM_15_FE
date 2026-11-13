@@ -116,6 +116,20 @@ function brandCheck(d: AnalyzeResponse, brandTexts: string[]): CheckItem {
   }
 }
 
+function printedCheck(d: AnalyzeResponse): CheckItem | null {
+  const check = d.printed_domain_check;
+  if (!check || check.status === 'not_checked') return null;
+  const label = '안내문 주소 비교';
+  const printed = check.printed.join(', ');
+  if (check.status === 'matched') {
+    return { key: 'printed', label, tone: 'ok', detail: `사진 속 안내문에 적힌 주소(${printed})와 QR 주소가 같아요.` };
+  }
+  return {
+    key: 'printed', label, tone: 'caution',
+    detail: `사진 속 안내문에 적힌 주소(${printed})와 QR 주소(${check.qr_domain ?? '알 수 없음'})가 달라요. 주문 대행 서비스일 수도 있지만, QR 위에 스티커가 덧붙여진 건 아닌지 확인해 주세요.`,
+  };
+}
+
 function storeCheck(d: AnalyzeResponse): CheckItem | null {
   const s = d.url_analysis.risk_signals;
   const label = '매장 QR 비교';
@@ -163,7 +177,8 @@ export function buildVerdict(d: AnalyzeResponse, brandTexts: string[] = []): Ver
   const checks: CheckItem[] = [];
   if (blocked) checks.push({ key: 'blocked', label: '접속 차단', tone: 'danger', detail: blockedReason(d) });
   const store = storeCheck(d);
-  checks.push(downloadCheck(d), brandCheck(d, brandTexts),...(store ? [store] : []), urlShapeCheck(d),
+  const printed = printedCheck(d);
+  checks.push(downloadCheck(d), brandCheck(d, brandTexts), ...(printed ? [printed] : []), ...(store ? [store] : []), urlShapeCheck(d),
     domainAgeCheck(d), tlsCheck(d), locationCheck(d), pageCheck(d));
 
   // The backend's combined-v1 verdict is the single source of truth for the banner and score.

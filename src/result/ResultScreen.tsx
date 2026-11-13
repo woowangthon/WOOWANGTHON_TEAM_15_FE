@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { Alert, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Linking, Platform, Pressable, ScrollView, StatusBar, StyleSheet, Text, View } from 'react-native';
 
-import type { AnalyzeOutcome } from '../api/analyze';
+import type { AnalyzeOutcome, PhotoNote } from '../api/analyze';
 import type { AnalyzeResponse } from '../api/types';
 import { buildVerdict, type CheckTone, type Tone } from './verdict';
 
@@ -23,17 +23,56 @@ type Props = { outcome: AnalyzeOutcome; onRescan: () => void };
 
 export function ResultScreen({ outcome, onRescan }: Props) {
   return outcome.kind === 'analysis'
-    ? <AnalysisResult data={outcome.data} brandTexts={outcome.brandTexts} onRescan={onRescan} />
+    ? <AnalysisResult data={outcome.data} brandTexts={outcome.brandTexts} photo={outcome.photo} onRescan={onRescan} />
     : <SimpleResult outcome={outcome} onRescan={onRescan} />;
 }
 
-function AnalysisResult({ data, brandTexts, onRescan }: { data: AnalyzeResponse; brandTexts: string[]; onRescan: () => void }) {
+// Pinned app-style header (outside the ScrollView): thin chevron back button on the left (drawn, no icon font), title centered.
+// Goes back to the QR input screen without opening anything.
+function BackButton({ onPress }: { onPress: () => void }) {
+  return (
+    <View style={styles.header}>
+      <Pressable accessibilityRole="button" accessibilityLabel="뒤로 가기" hitSlop={8} onPress={onPress}
+        style={({ pressed }) => [styles.back, pressed && styles.backPressed]}>
+        <View style={styles.chevron} />
+      </Pressable>
+      <Text style={styles.headerTitle} accessibilityRole="header">검사 결과</Text>
+      <View style={styles.back} />
+    </View>
+  );
+}
+
+// Shown only when the QR photo was sent (photoAssist on): what it found, that it found nothing, or why it was skipped.
+function PhotoCard({ photo }: { photo: PhotoNote }) {
+  let body: string;
+  if (photo.kind === 'found') {
+    const parts = [
+      photo.brands.length ? `상표명: ${photo.brands.join(', ')}${photo.usedBrand ? ` (검사에 '${photo.usedBrand}' 사용)` : ' (직접 입력한 상표명을 우선 사용)'}` : null,
+      photo.domains.length ? `안내문에 적힌 주소: ${photo.domains.join(', ')}` : '안내문에 적힌 주소는 찾지 못했어요.',
+    ].filter(Boolean);
+    body = parts.join('\n');
+  } else if (photo.kind === 'none') {
+    body = '사진에서 상표명이나 안내문에 적힌 주소를 찾지 못했어요. 상표 비교와 안내문 주소 비교 없이 QR 주소만 검사했어요.';
+  } else {
+    body = `사진에서 상표·주소 찾기를 건너뛰었어요. ${photo.reason} QR 주소 검사는 그대로 했어요.`;
+  }
+  return (
+    <View style={styles.card}>
+      <Text style={styles.heading}>사진에서 찾은 정보</Text>
+      <Text style={photo.kind === 'found' ? styles.reason : styles.aiNote}>{body}</Text>
+    </View>
+  );
+}
+
+function AnalysisResult({ data, brandTexts, photo, onRescan }: { data: AnalyzeResponse; brandTexts: string[]; photo?: PhotoNote; onRescan: () => void }) {
   const verdict = buildVerdict(data, brandTexts);
   const colors = TONE_COLORS[verdict.tone];
   const [showDetails, setShowDetails] = useState(verdict.tone !== 'low');
 
   return (
-    <ScrollView contentContainerStyle={styles.content}>
+    <View style={styles.page}>
+      <BackButton onPress={onRescan} />
+      <ScrollView contentContainerStyle={styles.content}>
       <View style={[styles.banner, { backgroundColor: colors.bg, borderColor: colors.border }]} accessibilityRole="summary">
         <Text style={[styles.bannerTitle, { color: colors.fg }]}>{verdict.title}</Text>
         <Text style={[styles.bannerSummary, { color: colors.fg }]}>{verdict.summary}</Text>
@@ -52,6 +91,8 @@ function AnalysisResult({ data, brandTexts, onRescan }: { data: AnalyzeResponse;
         </>}
         <Text style={styles.note}>주소는 글자로만 보여주고, 사이트는 열지 않았어요.</Text>
       </View>
+
+      {photo && <PhotoCard photo={photo} />}
 
       {(data.explanation_status === 'generated' || data.explanation_status === 'cached') && data.explanation ? (
         <View style={styles.card}>
@@ -109,7 +150,8 @@ function AnalysisResult({ data, brandTexts, onRescan }: { data: AnalyzeResponse;
       {verdict.canOpen
         ? <OpenAnyway url={data.url} tone={verdict.tone} />
         : <Text style={styles.note}>검사 서버가 위험한 이동을 막은 주소라 이 앱에서는 열 수 없어요.</Text>}
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
@@ -167,7 +209,9 @@ function SimpleResult({ outcome, onRescan }: { outcome: Exclude<AnalyzeOutcome, 
   const notUrl = outcome.kind === 'not_url';
   const colors = TONE_COLORS.unknown;
   return (
-    <ScrollView contentContainerStyle={styles.content}>
+    <View style={styles.page}>
+      <BackButton onPress={onRescan} />
+      <ScrollView contentContainerStyle={styles.content}>
       <View style={[styles.banner, { backgroundColor: colors.bg, borderColor: colors.border }]}>
         <Text style={[styles.bannerTitle, { color: colors.fg }]}>{notUrl ? '웹 주소가 아니에요' : '검사하지 못했어요'}</Text>
         <Text style={[styles.bannerSummary, { color: colors.fg }]}>
@@ -182,12 +226,25 @@ function SimpleResult({ outcome, onRescan }: { outcome: Exclude<AnalyzeOutcome, 
       <Pressable accessibilityRole="button" style={styles.primary} onPress={onRescan}>
         <Text style={styles.primaryText}>다시 스캔하기</Text>
       </Pressable>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  content: { paddingHorizontal: 20, paddingTop: 56, paddingBottom: 48, gap: 14, width: '100%', maxWidth: 620, alignSelf: 'center' },
+  page: { flex: 1 },
+  content: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 48, gap: 14, width: '100%', maxWidth: 620, alignSelf: 'center' },
+  // No safe-area library in this project: status bar height on Android, notch allowance on iOS.
+  header: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingBottom: 6,
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight ?? 24) + 6 : 50,
+    backgroundColor: '#F3F6FC', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#DCE2EC',
+  },
+  headerTitle: { fontSize: 17, fontWeight: '700', color: '#152443' },
+  back: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
+  backPressed: { backgroundColor: '#E4E9F2' },
+  // A square with two borders, rotated 45° → a thin "‹" chevron like iOS/Toss/Kakao back buttons.
+  chevron: { width: 12, height: 12, borderLeftWidth: 2.5, borderBottomWidth: 2.5, borderColor: '#152443', transform: [{ rotate: '45deg' }], marginLeft: 4 },
   banner: { borderWidth: 1, borderRadius: 18, padding: 20, gap: 8 },
   bannerTitle: { fontSize: 28, fontWeight: '800' },
   bannerSummary: { fontSize: 17, lineHeight: 25, fontWeight: '600' },

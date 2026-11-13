@@ -80,6 +80,8 @@ export type AnalyzeResponse = {
   // Optional so responses from older backends still parse.
   explanation?: string;
   explanation_status?: AiStatus;
+  // Address printed next to the QR (read from a photo) vs the QR's address. Optional for older backends.
+  printed_domain_check?: { status: 'matched' | 'mismatched' | 'not_checked'; printed: string[]; qr_domain: string | null };
   // Why no AI explanation was made (blocked target, or AI unavailable). Shown in the AI card instead.
   explanation_skip_reason?: string | null;
   // Overall verdict (combined-v1): behavior-v1 points + URL/brand/store signals. Drives the banner.

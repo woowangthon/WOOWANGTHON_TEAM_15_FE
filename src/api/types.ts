@@ -82,6 +82,12 @@ export type AnalyzeResponse = {
   explanation_status?: AiStatus;
   // Address printed next to the QR (read from a photo) vs the QR's address. Optional for older backends.
   printed_domain_check?: { status: 'matched' | 'mismatched' | 'not_checked'; printed: string[]; qr_domain: string | null };
+  // Brand / phishing words inside a non-official domain name (P1-8). Optional for older backends.
+  domain_keyword_check?: {
+    brand_in_domain: { word: string; official: string[] } | null;
+    domain_keywords: string[];
+    path_keywords: string[];
+  };
   // Why no AI explanation was made (blocked target, or AI unavailable). Shown in the AI card instead.
   explanation_skip_reason?: string | null;
   // Overall verdict (combined-v1): behavior-v1 points + URL/brand/store signals. Drives the banner.

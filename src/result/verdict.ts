@@ -116,6 +116,23 @@ function brandCheck(d: AnalyzeResponse, brandTexts: string[]): CheckItem {
   }
 }
 
+function domainWordsCheck(d: AnalyzeResponse): CheckItem | null {
+  const check = d.domain_keyword_check;
+  if (!check) return null;
+  const label = '주소 속 상표·의심 단어';
+  if (check.brand_in_domain) {
+    const { word, official } = check.brand_in_domain;
+    return { key: 'words', label, tone: 'danger', detail: `주소에 '${word}'가 들어 있지만 공식 주소(${official.join(', ')})가 아니에요. 상표를 흉내 낸 주소일 수 있어요.` };
+  }
+  if (check.domain_keywords.length) {
+    return { key: 'words', label, tone: 'caution', detail: `주소 이름에 '${check.domain_keywords.join(', ')}' 같은 낚시성 단어가 들어 있어요.` };
+  }
+  if (check.path_keywords.length) {
+    return { key: 'words', label, tone: 'info', detail: `주소 뒷부분에 '${check.path_keywords.join(', ')}'가 있어요. 정상 사이트에도 흔한 단어라 참고만 하세요.` };
+  }
+  return null;
+}
+
 function printedCheck(d: AnalyzeResponse): CheckItem | null {
   const check = d.printed_domain_check;
   if (!check || check.status === 'not_checked') return null;
@@ -178,7 +195,8 @@ export function buildVerdict(d: AnalyzeResponse, brandTexts: string[] = []): Ver
   if (blocked) checks.push({ key: 'blocked', label: '접속 차단', tone: 'danger', detail: blockedReason(d) });
   const store = storeCheck(d);
   const printed = printedCheck(d);
-  checks.push(downloadCheck(d), brandCheck(d, brandTexts), ...(printed ? [printed] : []), ...(store ? [store] : []), urlShapeCheck(d),
+  const words = domainWordsCheck(d);
+  checks.push(downloadCheck(d), brandCheck(d, brandTexts), ...(words ? [words] : []), ...(printed ? [printed] : []), ...(store ? [store] : []), urlShapeCheck(d),
     domainAgeCheck(d), tlsCheck(d), locationCheck(d), pageCheck(d));
 
   // The backend's combined-v1 verdict is the single source of truth for the banner and score.

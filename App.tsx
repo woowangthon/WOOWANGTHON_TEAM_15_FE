@@ -5,7 +5,7 @@ import { StatusBar } from 'expo-status-bar';
 import { ActivityIndicator, AppState, BackHandler, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { analyzeQr, type AnalyzeOutcome, type PhotoNote } from './src/api/analyze';
-import { readBrandsFromPhoto } from './src/api/ocr';
+import { readBrandsFromPhoto, type BrandOCRResult } from './src/api/ocr';
 import { photoForOcr } from './src/api/photo';
 import type { Store } from './src/api/stores';
 import { ExtraInfo } from './src/input/ExtraInfo';
@@ -37,10 +37,12 @@ export default function App() {
   const [outcome, setOutcome] = useState<AnalyzeOutcome | null>(null);
   const [brand, setBrand] = useState('');
   const [store, setStore] = useState<Store | null>(null);
-  const [printedDomains, setPrintedDomains] = useState<string[]>([]);
-  // Off by default (not saved): when on, a QR picked from the album is also sent to read brand/printed addresses.
+  const [extraBusy, setExtraBusy] = useState(false);
+  const [pendingOCR, setPendingOCR] = useState<{ parsed: Result; ocr: BrandOCRResult } | null>(null);
+  // Off by default (not saved): when on, a QR picked from the album is also sent to read brand names.
   const [photoAssist, setPhotoAssist] = useState(false);
   const operation = useRef(false);
+  const submitting = useRef(false);
   const scanAccepted = useRef(true);
   // RN 0.88's ScrollView is a function component; take the instance type from its ref prop.
   const scrollRef = useRef<ComponentRef<typeof ScrollView>>(null);
@@ -72,60 +74,70 @@ export default function App() {
         setMessage('카메라 스캔을 중지했어요. 다시 스캔하거나 사진을 선택해 주세요.');
         return true;
       }
-      return analyzing;
+      if (pendingOCR) { setPendingOCR(null); setResult(null); return true; }
+      return analyzing || extraBusy;
     });
     return () => subscription.remove();
-  }, [outcome, scanning, analyzing]);
+  }, [outcome, scanning, analyzing, extraBusy, pendingOCR]);
 
-  // photoUri: the QR photo itself, only when the person turned on photoAssist.
+  // Reading a QR photo pauses here: no URL analysis runs before the person confirms or skips OCR.
   async function analyze(parsed: Result, photoUri?: string) {
-    setAnalyzing(true);
-    try {
-      let brandText = brand.trim();
-      let domains = printedDomains;
-      let photo: PhotoNote | undefined;
-      if (photoUri && parsed.url) {
-        setMessage('사진에서 상표명과 안내문에 적힌 주소를 찾고 있어요.');
-        const base64 = await photoForOcr(photoUri);
-        const found = base64 ? await readBrandsFromPhoto(base64) : null;
-        if (!found) {
-          photo = { kind: 'skipped', reason: '사진을 읽지 못했어요.' };
-        } else if (found.status !== 'ok') {
-          photo = { kind: 'skipped', reason: found.message ?? '사진을 처리하지 못했어요.' };
-        } else if (!found.brands.length && !found.domains.length) {
-          photo = { kind: 'none' };
-        } else {
-          // A typed brand wins; otherwise use the best candidate (registered names come first).
-          const usedBrand = brandText ? null : found.brands[0]?.name ?? null;
-          brandText = brandText || usedBrand || '';
-          domains = [...new Set([...domains, ...found.domains.map((d) => d.domain)])];
-          photo = { kind: 'found', brands: found.brands.map((b) => b.name), domains: found.domains.map((d) => d.domain), usedBrand };
-        }
+    if (photoUri && parsed.url) {
+      setAnalyzing(true);
+      setMessage('사진에서 상표명을 읽고 있어요.');
+      try {
+        const prepared = await photoForOcr(photoUri);
+        const ocr = prepared ? await readBrandsFromPhoto(prepared) : {
+          status: 'invalid_image' as const, candidates: [], message: '사진을 읽지 못했어요. 다시 선택하거나 상표명을 직접 입력해 주세요.',
+        };
+        setPendingOCR({ parsed, ocr });
+        setMessage('상표 후보를 확인하거나 상표 비교를 건너뛰어 주세요.');
+      } finally {
+        setAnalyzing(false);
       }
-      setMessage('QR 주소를 검사하고 있어요. 최대 30초 정도 걸릴 수 있어요. 사이트는 열지 않아요.');
-      const outcome = await analyzeQr(parsed.raw, parsed.url, {
-        brandTexts: brandText ? [brandText] : [],
+      return;
+    }
+    await submitAnalysis(parsed, brand.trim());
+  }
+
+  async function submitAnalysis(parsed: Result, confirmedBrand: string, photo?: PhotoNote) {
+    if (submitting.current) return;
+    submitting.current = true;
+    setPendingOCR(null);
+    setAnalyzing(true);
+    setMessage('QR 주소를 검사하고 있어요. 사이트는 자동으로 열지 않아요.');
+    try {
+      const next = await analyzeQr(parsed.raw, parsed.url, {
+        brandTexts: confirmedBrand ? [confirmedBrand] : [],
         storeId: store?.store_id ?? null,
-        printedDomains: domains,
       });
-      setOutcome(outcome.kind === 'analysis' ? { ...outcome, photo } : outcome);
+      setOutcome(next.kind === 'analysis' ? { ...next, photo } : next);
     } finally {
       setAnalyzing(false);
-      // Brand/store/printed addresses describe the QR just scanned; clear them so the next scan starts empty.
+      submitting.current = false;
       setBrand('');
       setStore(null);
-      setPrintedDomains([]);
     }
   }
 
+  function confirmOCR(confirmedBrand: string) {
+    if (!pendingOCR) return;
+    const { parsed, ocr } = pendingOCR;
+    const photo: PhotoNote = ocr.candidates.length
+      ? { kind: 'found', brands: ocr.candidates.map((c) => c.brand), usedBrand: confirmedBrand || null }
+      : { kind: 'skipped', reason: ocr.message };
+    void submitAnalysis(parsed, confirmedBrand, photo);
+  }
+
   function backToInput() {
+    setPendingOCR(null);
     setOutcome(null);
     setResult(null);
     setMessage('카메라로 스캔하거나 QR 이미지 한 장을 선택해 주세요.');
   }
 
   // photoAssist on: take one photo (with crop) instead of live scanning, read the QR from it on the phone,
-  // and send the cropped photo to find the brand and printed addresses next to the QR.
+  // and send the cropped photo to find the brand names next to the QR.
   async function capturePhoto() {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) {
@@ -235,7 +247,7 @@ export default function App() {
       </View>
     );
   }
-  const locked = busy || analyzing;
+  const locked = busy || analyzing || extraBusy || pendingOCR !== null;
   return (
     <View style={styles.screen}>
       <StatusBar style="dark" />
@@ -282,19 +294,38 @@ export default function App() {
         {!scanning && <>
           <View style={[styles.switchCard, photoAssist && styles.switchCardOn]}>
             <View style={styles.switchText}>
-              <Text style={styles.heading}>QR 사진으로 상표·주소도 찾기</Text>
+              <Text style={styles.heading}>QR 사진으로 상표명도 찾기</Text>
               <Text style={styles.note}>
                 {photoAssist
-                  ? '켜짐: 카메라 버튼은 사진 촬영으로 바뀌어요. 찍은 뒤 QR과 안내문이 들어가게 잘라 주세요. QR 사진이 AI 서버로 전송되며 저장하지 않아요.'
-                  : '켜면 QR 사진에서 상표명과 안내문에 적힌 주소를 찾아, QR 주소와 같은 곳인지 비교해요.'}
+                  ? '켜짐: 카메라 버튼은 사진 촬영으로 바뀌어요. 찍은 뒤 QR과 안내문이 들어가게 잘라 주세요. QR 사진이 검사 서버로 전송되며 영구 저장하지 않아요. 인식한 상표는 확인 후 사용해요.'
+                  : '켜면 QR 사진에서 상표명 후보를 찾아요. 사용자가 선택한 상표의 공식 도메인과 QR 주소를 비교해요.'}
               </Text>
             </View>
             <Switch value={photoAssist} onValueChange={setPhotoAssist} disabled={locked || scanning}
-              accessibilityLabel="QR 사진으로 상표와 주소도 찾기" />
+              accessibilityLabel="QR 사진으로 상표명도 찾기" />
           </View>
           <ExtraInfo brand={brand} onBrandChange={setBrand} store={store} onStoreChange={setStore}
-            printedDomains={printedDomains} onPrintedDomainsChange={setPrintedDomains} disabled={locked} />
-          {locked && <ActivityIndicator accessibilityLabel={analyzing ? '주소 검사 중' : '처리 중'} color="#2256CF" />}
+            onBusyChange={setExtraBusy} disabled={locked} />
+          {pendingOCR && <View style={styles.card}
+            onLayout={(e) => scrollRef.current?.scrollTo({ y: Math.max(0, e.nativeEvent.layout.y - 16), animated: true })}>
+            <Text style={styles.heading}>사진 속 상표 확인</Text>
+            <Text style={styles.note}>{pendingOCR.ocr.message}</Text>
+            <Text style={styles.note}>선택한 상표를 QR 주소와 비교해요. 인식 신뢰도는 사이트 안전도가 아니에요.</Text>
+            {pendingOCR.ocr.candidates.map((candidate) => (
+              <Pressable key={candidate.brand} accessibilityRole="button" style={styles.button}
+                onPress={() => confirmOCR(candidate.brand)}>
+                <Text style={styles.buttonText}>{candidate.brand} 확인하고 검사 (글자 인식 {Math.round(candidate.ocr_confidence * 100)}%)</Text>
+              </Pressable>
+            ))}
+            <Pressable accessibilityRole="button" style={[styles.button, styles.secondary]}
+              onPress={() => confirmOCR(brand.trim())}>
+              <Text style={styles.secondaryText}>{brand.trim() ? `직접 입력한 '${brand.trim()}'로 검사` : '상표 비교 없이 URL만 검사'}</Text>
+            </Pressable>
+            <Pressable accessibilityRole="button" style={styles.secondary} onPress={() => {
+              setPendingOCR(null); setResult(null); setMessage('촬영 또는 사진 선택을 다시 진행해 주세요.');
+            }}><Text style={styles.secondaryText}>취소하고 다시 선택</Text></Pressable>
+          </View>}
+          {(busy || analyzing || extraBusy) && <ActivityIndicator accessibilityLabel={analyzing ? '주소 검사 중' : '처리 중'} color="#2256CF" />}
           <Text accessibilityLiveRegion="polite" style={styles.message}>{mobile ? message : 'QR 입력은 Android 또는 iOS 기기의 Expo Go에서 사용해 주세요.'}</Text>
           {result && <View style={styles.card}>
             <Text style={styles.heading}>QR 원본 문자열</Text>

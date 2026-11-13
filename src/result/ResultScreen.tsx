@@ -47,14 +47,14 @@ function PhotoCard({ photo }: { photo: PhotoNote }) {
   let body: string;
   if (photo.kind === 'found') {
     const parts = [
-      photo.brands.length ? `상표명: ${photo.brands.join(', ')}${photo.usedBrand ? ` (검사에 '${photo.usedBrand}' 사용)` : ' (직접 입력한 상표명을 우선 사용)'}` : null,
-      photo.domains.length ? `안내문에 적힌 주소: ${photo.domains.join(', ')}` : '안내문에 적힌 주소는 찾지 못했어요.',
+      `사진 속 상표 후보: ${photo.brands.join(', ')}`,
+      photo.usedBrand ? `사용자가 확인한 상표: ${photo.usedBrand}` : '사진 속 후보는 검사에 사용하지 않았어요.',
     ].filter(Boolean);
     body = parts.join('\n');
   } else if (photo.kind === 'none') {
-    body = '사진에서 상표명이나 안내문에 적힌 주소를 찾지 못했어요. 상표 비교와 안내문 주소 비교 없이 QR 주소만 검사했어요.';
+    body = '사진에서 등록된 상표명을 찾지 못했어요. 상표를 별도로 입력하지 않았다면 상표 비교는 수행하지 않았어요.';
   } else {
-    body = `사진에서 상표·주소 찾기를 건너뛰었어요. ${photo.reason} QR 주소 검사는 그대로 했어요.`;
+    body = `사진에서 상표 찾기를 건너뛰었어요. ${photo.reason} QR 주소 검사는 그대로 했어요.`;
   }
   return (
     <View style={styles.card}>

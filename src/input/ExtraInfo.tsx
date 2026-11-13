@@ -9,19 +9,17 @@ import { searchStores, type Store } from '../api/stores';
 // Optional context sent with the QR URL:
 // - brand name: typed, or picked from candidates the server reads from a photo (OCR)
 // - store: compared against the store's registered QR address
-// - printed addresses: web addresses printed next to the QR (from a photo), compared with the QR address
 type Props = {
   brand: string;
   onBrandChange: (value: string) => void;
   store: Store | null;
   onStoreChange: (store: Store | null) => void;
-  printedDomains: string[];
-  onPrintedDomainsChange: (domains: string[]) => void;
+  onBusyChange: (busy: boolean) => void;
   disabled?: boolean;
 };
 
 export function ExtraInfo({
-  brand, onBrandChange, store, onStoreChange, printedDomains, onPrintedDomainsChange, disabled,
+  brand, onBrandChange, store, onStoreChange, onBusyChange, disabled,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [keyword, setKeyword] = useState('');
@@ -32,8 +30,10 @@ export function ExtraInfo({
   const [candidates, setCandidates] = useState<BrandCandidate[]>([]);
   const [ocrMessage, setOcrMessage] = useState<string | null>(null);
 
-  // Photo → server vision AI → brand-name candidates the person picks from. Nothing is filled in automatically.
+  // Photo → server CPU OCR → brand-name candidates the person picks from. Nothing is filled in automatically.
   async function readFromPhoto(source: 'camera' | 'library') {
+    setReading(true);
+    onBusyChange(true);
     setOcrMessage(null);
     setCandidates([]);
     try {
@@ -51,22 +51,19 @@ export function ExtraInfo({
         : await ImagePicker.launchImageLibraryAsync(options);
       if (picked.canceled) return;
       const uri = picked.assets[0]?.uri;
-      const base64 = uri ? await photoForOcr(uri) : null;
-      if (!base64) {
+      const photoUri = uri ? await photoForOcr(uri) : null;
+      if (!photoUri) {
         setOcrMessage('사진을 읽지 못했어요. 다른 사진으로 다시 시도해 주세요.');
         return;
       }
-      setReading(true);
-      const result = await readBrandsFromPhoto(base64);
-      setCandidates(result.brands);
+      const result = await readBrandsFromPhoto(photoUri);
+      setCandidates(result.candidates);
       setOcrMessage(result.message);
-      if (result.domains.length) {
-        onPrintedDomainsChange([...new Set([...printedDomains, ...result.domains.map((d) => d.domain)])]);
-      }
     } catch {
       setOcrMessage('사진을 가져오지 못했어요. 상표명을 직접 입력해 주세요.');
     } finally {
       setReading(false);
+      onBusyChange(false);
     }
   }
 
@@ -88,7 +85,6 @@ export function ExtraInfo({
   const filled = [
     brand.trim() && `상표: ${brand.trim()}`,
     store && `매장: ${store.store_name}`,
-    printedDomains.length > 0 && `안내문 주소: ${printedDomains.join(', ')}`,
   ].filter(Boolean).join(' · ');
   return (
     <View style={styles.card}>
@@ -121,34 +117,22 @@ export function ExtraInfo({
             <Text style={styles.searchButtonText}>앨범에서 찾기</Text>
           </Pressable>
         </View>
-        <Text style={styles.hint}>상표가 보이는 부분만 잘라 주세요. 사진은 상표명을 읽는 데만 AI 서버로 보내고 저장하지 않아요.</Text>
+        <Text style={styles.hint}>상표가 보이는 부분만 잘라 주세요. 사진은 상표명을 읽는 데만 검사 서버로 보내고 저장하지 않아요.</Text>
         {reading && <ActivityIndicator accessibilityLabel="사진에서 상표명 읽는 중" color="#2256CF" />}
         {ocrMessage && <Text style={styles.hint}>{ocrMessage}</Text>}
         {candidates.length > 0 && <>
           <Text style={styles.hint}>찾은 상표명 후보예요. 맞는 이름을 눌러 주세요.</Text>
           <View style={styles.chips}>
             {candidates.map((c) => (
-              <Pressable key={c.name} accessibilityRole="button" disabled={disabled}
-                style={[styles.chip, brand.trim() === c.name && styles.chipSelected]}
-                onPress={() => { onBrandChange(c.name); setCandidates([]); setOcrMessage(null); }}>
-                <Text style={styles.chipText}>{c.name}</Text>
-                {!c.registered && <Text style={styles.chipNote}>공식 도메인 미등록</Text>}
+              <Pressable key={c.brand} accessibilityRole="button" disabled={disabled}
+                style={[styles.chip, brand.trim() === c.brand && styles.chipSelected]}
+                onPress={() => { onBrandChange(c.brand); setCandidates([]); setOcrMessage(null); }}>
+                <Text style={styles.chipText}>{c.brand}</Text>
+                <Text style={styles.chipNote}>글자 인식 {Math.round(c.ocr_confidence * 100)}%</Text>
               </Pressable>
             ))}
           </View>
         </>}
-        {printedDomains.length > 0 && (
-          <View style={styles.selected}>
-            <View style={styles.headerText}>
-              <Text style={styles.hint}>사진 속 안내문에 적힌 주소 (QR 주소와 비교해요)</Text>
-              <Text style={styles.selectedText}>{printedDomains.join(', ')}</Text>
-            </View>
-            <Pressable accessibilityRole="button" disabled={disabled} onPress={() => onPrintedDomainsChange([])}>
-              <Text style={styles.toggle}>지우기</Text>
-            </Pressable>
-          </View>
-        )}
-
         <Text style={styles.label}>매장</Text>
         {store
           ? <View style={styles.selected}>

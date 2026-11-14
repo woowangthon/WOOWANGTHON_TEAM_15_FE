@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "WOOWANGTHON_TEAM_15_FE",
+    "name": "QURE",
     "slug": "WOOWANGTHON_TEAM_15_FE",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -20,6 +20,17 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 260,
+          "resizeMode": "contain",
+          "backgroundColor": "#2256CF"
+        }
+      ]
+    ]
   }
 }

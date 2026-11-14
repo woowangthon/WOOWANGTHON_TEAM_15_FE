@@ -252,7 +252,7 @@ export default function App() {
     <View style={styles.screen}>
       <StatusBar style="dark" />
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content}>
-        <Text style={styles.eyebrow}>QR ALERT</Text>
+        <Text style={styles.eyebrow}>QURE</Text>
         <Text style={styles.title}>QR 입력</Text>
         <Text style={styles.description}>
           {photoAssist

@@ -1,4 +1,4 @@
-# QR Alert — Expo frontend
+# QURE — Expo frontend
 
 Expo SDK 58 기반 QR 입력·상표 OCR 확인·FastAPI 분석 결과 앱입니다.
 

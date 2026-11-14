@@ -1,4 +1,4 @@
-import type { AnalyzeResponse, AttackType, Level, Severity } from '../api/types';
+import type { AnalyzeResponse, AttackType, Level, Severity, URLAnalysis } from '../api/types';
 
 // Turns the backend response into what the result screen shows.
 // Banner and score come from the backend's combined-v1 verdict; the check list explains each item.
@@ -74,46 +74,70 @@ function locationCheck(d: AnalyzeResponse): CheckItem {
   return { key: 'geo', label, tone: 'unknown', detail: '서버 위치를 확인하지 못했어요.' };
 }
 
+// Both observations contribute to the backend verdict. Name each one so a final
+// official-domain match does not hide a risk found in the original QR address.
+function urlChecks(d: AnalyzeResponse): { analysis: URLAnalysis; prefix: string }[] {
+  return d.final_url_analysis
+    ? [{ analysis: d.final_url_analysis, prefix: '최종 이동 주소: ' }, { analysis: d.url_analysis, prefix: 'QR의 원래 주소: ' }]
+    : [{ analysis: d.url_analysis, prefix: '' }];
+}
+
+function combineChecks(key: string, label: string, checks: CheckItem[]): CheckItem {
+  const rank: Record<CheckTone, number> = { info: 0, ok: 1, unknown: 2, caution: 3, danger: 4 };
+  const tone = checks.reduce<CheckTone>((worst, check) => rank[check.tone] > rank[worst] ? check.tone : worst, 'info');
+  return { key, label, tone, detail: checks.map((check) => check.detail).join(' ') };
+}
+
 function urlShapeCheck(d: AnalyzeResponse): CheckItem {
-  const s = d.url_analysis.risk_signals;
   const label = '주소 형태';
-  const notes: string[] = [];
-  if (s.pattern_codes.includes('SHORT_URL')) notes.push('단축 URL이라 실제 목적지를 숨기고 있을 수 있어요.');
-  if (s.pattern_codes.includes('IP_LITERAL')) notes.push('도메인 이름 대신 숫자 IP 주소를 쓰고 있어요.');
-  if (s.pattern_codes.includes('USERINFO_IN_URL')) notes.push('주소에 @가 들어 있어 실제 목적지를 속일 수 있어요.');
-  if (s.redirect_pattern_detected) notes.push('다른 주소로 넘겨주는 형태가 들어 있어요.');
-  if (notes.length) return { key: 'shape', label, tone: 'caution', detail: notes.join(' ') };
-  if (s.suspicious_url_pattern === null) return { key: 'shape', label, tone: 'unknown', detail: '주소 형태를 확인하지 못했어요.' };
-  return { key: 'shape', label, tone: 'ok', detail: '단축 URL·IP 주소 같은 의심 형태가 없어요.' };
+  const checks = urlChecks(d).map(({ analysis, prefix }): CheckItem => {
+    const s = analysis.risk_signals;
+    const notes: string[] = [];
+    if (s.pattern_codes.includes('SHORT_URL')) notes.push('단축 URL이라 실제 목적지를 숨기고 있을 수 있어요.');
+    if (s.pattern_codes.includes('IP_LITERAL')) notes.push('도메인 이름 대신 숫자 IP 주소를 쓰고 있어요.');
+    if (s.pattern_codes.includes('USERINFO_IN_URL')) notes.push('주소에 @가 들어 있어 실제 목적지를 속일 수 있어요.');
+    if (s.redirect_pattern_detected) notes.push('다른 주소로 넘겨주는 형태가 들어 있어요.');
+    if (notes.length) return { key: 'shape', label, tone: 'caution', detail: prefix + notes.join(' ') };
+    if (s.suspicious_url_pattern === null) return { key: 'shape', label, tone: 'unknown', detail: prefix + '주소 형태를 확인하지 못했어요.' };
+    return { key: 'shape', label, tone: 'ok', detail: prefix + '검사한 주소에서 단축 URL·IP 주소 같은 의심 형태를 찾지 못했어요.' };
+  });
+  return combineChecks('shape', label, checks);
 }
 
 function downloadCheck(d: AnalyzeResponse): CheckItem {
-  const s = d.url_analysis.risk_signals;
   const label = '파일 다운로드 유도';
-  if (s.pattern_codes.includes('EXECUTABLE_LINK') || s.pattern_codes.includes('EXECUTABLE_QUERY')) {
-    return { key: 'download', label, tone: 'danger', detail: '주소가 앱·실행 파일(.apk, .exe 등)을 내려받게 해요.' };
+  const found = urlChecks(d).filter(({ analysis }) => analysis.risk_signals.pattern_codes.some(
+    (code) => code === 'EXECUTABLE_LINK' || code === 'EXECUTABLE_QUERY'));
+  if (found.length) {
+    return { key: 'download', label, tone: 'danger', detail: found.map(({ prefix }) =>
+      prefix + '앱·실행 파일(.apk, .exe 등)을 내려받는 형태의 링크예요.').join(' ') };
   }
-  if (d.page?.download_response) return { key: 'download', label, tone: 'danger', detail: '접속하면 바로 파일이 내려받아져요.' };
-  return { key: 'download', label, tone: 'ok', detail: '실행 파일 링크는 없어요.' };
+  if (d.page?.download_response) return { key: 'download', label, tone: 'danger', detail: '대상 서버가 파일 다운로드 응답을 반환했어요.' };
+  if (d.page?.status !== 'ok') {
+    return { key: 'download', label, tone: 'unknown', detail: '검사한 주소에서 실행 파일 확장자를 찾지 못했지만, 페이지 내용을 확인하지 못해 다운로드 유도 여부는 확인하지 못했어요.' };
+  }
+  return { key: 'download', label, tone: 'ok', detail: '검사한 주소에서 실행 파일 링크나 파일 다운로드 응답을 찾지 못했어요.' };
 }
 
 function brandCheck(d: AnalyzeResponse, brandTexts: string[]): CheckItem {
   const label = '공식 도메인 비교';
-  // The backend names the brand it compared against when one was found in the official-domain DB.
-  const compared = typeof d.url_analysis.brand_domain.brand === 'string' ? d.url_analysis.brand_domain.brand : null;
   const entered = brandTexts.map((b) => b.trim()).filter(Boolean);
-  const name = compared ?? entered[0];
-  switch (d.url_analysis.risk_signals.brand_domain_status) {
-    case 'matched':
-      return { key: 'brand', label, tone: 'ok', detail: `'${name}'의 공식 도메인과 일치해요.` };
-    case 'mismatched':
-      return { key: 'brand', label, tone: 'danger', detail: `'${name}'의 공식 도메인과 달라요. 사칭 사이트일 수 있어요.` };
-    default:
-      if (entered.length === 0) {
-        return { key: 'brand', label, tone: 'info', detail: '상표명을 입력하지 않아 비교하지 않았어요. 추가 정보에 상표명을 넣으면 사칭 여부도 확인해요.' };
-      }
-      return { key: 'brand', label, tone: 'unknown', detail: `'${entered.join(', ')}'은(는) 공식 도메인 목록에 아직 없어 비교하지 못했어요.` };
-  }
+  const checks = urlChecks(d).map(({ analysis, prefix }): CheckItem => {
+    const compared = typeof analysis.brand_domain.brand === 'string' ? analysis.brand_domain.brand : null;
+    const name = compared ?? entered[0];
+    switch (analysis.risk_signals.brand_domain_status) {
+      case 'matched':
+        return { key: 'brand', label, tone: 'ok', detail: prefix + `'${name}'의 공식 도메인과 일치해요.` };
+      case 'mismatched':
+        return { key: 'brand', label, tone: 'danger', detail: prefix + `'${name}'의 공식 도메인과 달라요. 사칭 사이트일 수 있어요.` };
+      default:
+        if (entered.length === 0) {
+          return { key: 'brand', label, tone: 'info', detail: prefix + '상표명을 입력하지 않아 비교하지 않았어요. 추가 정보에 상표명을 넣으면 사칭 여부도 확인해요.' };
+        }
+        return { key: 'brand', label, tone: 'unknown', detail: prefix + `'${entered.join(', ')}'의 공식 도메인을 확인하지 못했어요.` };
+    }
+  });
+  return combineChecks('brand', label, checks);
 }
 
 function domainWordsCheck(d: AnalyzeResponse): CheckItem | null {
@@ -151,18 +175,21 @@ function printedCheck(d: AnalyzeResponse): CheckItem | null {
 }
 
 function storeCheck(d: AnalyzeResponse): CheckItem | null {
-  const s = d.url_analysis.risk_signals;
   const label = '매장 QR 비교';
-  if (s.domain_impersonation_status === 'impersonation_suspected') {
-    return { key: 'store', label, tone: 'danger', detail: '등록된 매장 주소를 흉내 낸 다른 도메인이에요.' };
-  }
-  switch (s.store_qr_status) {
-    case 'not_checked': return null;
-    case 'matched':
-      return { key: 'store', label, tone: s.store_data_verified ? 'ok' : 'info', detail: s.store_data_verified ? '등록된 매장 주소와 일치해요.' : '등록된 주소와 일치하지만, 매장 정보가 아직 검증되지 않았어요.' };
-    case 'mismatched': return { key: 'store', label, tone: 'caution', detail: '등록된 매장 QR 주소와 달라요.' };
-    default: return { key: 'store', label, tone: 'unknown', detail: '매장 정보를 확인하지 못했어요.' };
-  }
+  const checks = urlChecks(d).flatMap(({ analysis, prefix }): CheckItem[] => {
+    const s = analysis.risk_signals;
+    if (s.domain_impersonation_status === 'impersonation_suspected') {
+      return [{ key: 'store', label, tone: 'danger', detail: prefix + '등록된 매장 주소를 흉내 낸 다른 도메인이에요.' }];
+    }
+    switch (s.store_qr_status) {
+      case 'not_checked': return [];
+      case 'matched':
+        return [{ key: 'store', label, tone: s.store_data_verified ? 'ok' : 'info', detail: prefix + (s.store_data_verified ? '등록된 매장 주소와 일치해요.' : '등록된 주소와 일치하지만, 매장 정보가 아직 검증되지 않았어요.') }];
+      case 'mismatched': return [{ key: 'store', label, tone: 'caution', detail: prefix + '등록된 매장 QR 주소와 달라요.' }];
+      default: return [{ key: 'store', label, tone: 'unknown', detail: prefix + '매장 정보를 확인하지 못했어요.' }];
+    }
+  });
+  return checks.length ? combineChecks('store', label, checks) : null;
 }
 
 function pageCheck(d: AnalyzeResponse): CheckItem {

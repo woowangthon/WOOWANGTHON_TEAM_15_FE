@@ -36,6 +36,7 @@ export default function App() {
   const [analyzing, setAnalyzing] = useState(false);
   const [outcome, setOutcome] = useState<AnalyzeOutcome | null>(null);
   const [brand, setBrand] = useState('');
+  const [extraPrintedDomains, setExtraPrintedDomains] = useState<string[]>([]);
   const [store, setStore] = useState<Store | null>(null);
   const [extraBusy, setExtraBusy] = useState(false);
   const [pendingOCR, setPendingOCR] = useState<{ parsed: Result; ocr: BrandOCRResult } | null>(null);
@@ -88,7 +89,7 @@ export default function App() {
       try {
         const prepared = await photoForOcr(photoUri);
         const ocr = prepared ? await readBrandsFromPhoto(prepared) : {
-          status: 'invalid_image' as const, candidates: [], message: '사진을 읽지 못했어요. 다시 선택하거나 상표명을 직접 입력해 주세요.',
+          status: 'invalid_image' as const, candidates: [], printedDomains: [], message: '사진을 읽지 못했어요. 다시 선택하거나 상표명을 직접 입력해 주세요.',
         };
         setPendingOCR({ parsed, ocr });
         setMessage('상표 후보를 확인하거나 상표 비교를 건너뛰어 주세요.');
@@ -97,10 +98,10 @@ export default function App() {
       }
       return;
     }
-    await submitAnalysis(parsed, brand.trim());
+    await submitAnalysis(parsed, brand.trim(), undefined, extraPrintedDomains);
   }
 
-  async function submitAnalysis(parsed: Result, confirmedBrand: string, photo?: PhotoNote) {
+  async function submitAnalysis(parsed: Result, confirmedBrand: string, photo?: PhotoNote, printedDomains: string[] = []) {
     if (submitting.current) return;
     submitting.current = true;
     setPendingOCR(null);
@@ -109,6 +110,7 @@ export default function App() {
     try {
       const next = await analyzeQr(parsed.raw, parsed.url, {
         brandTexts: confirmedBrand ? [confirmedBrand] : [],
+        printedDomains,
         storeId: store?.store_id ?? null,
       });
       setOutcome(next.kind === 'analysis' ? { ...next, photo } : next);
@@ -116,6 +118,7 @@ export default function App() {
       setAnalyzing(false);
       submitting.current = false;
       setBrand('');
+      setExtraPrintedDomains([]);
       setStore(null);
     }
   }
@@ -126,7 +129,7 @@ export default function App() {
     const photo: PhotoNote = ocr.candidates.length
       ? { kind: 'found', brands: ocr.candidates.map((c) => c.brand), usedBrand: confirmedBrand || null }
       : { kind: 'skipped', reason: ocr.message };
-    void submitAnalysis(parsed, confirmedBrand, photo);
+    void submitAnalysis(parsed, confirmedBrand, photo, ocr.printedDomains);
   }
 
   function backToInput() {
@@ -304,7 +307,7 @@ export default function App() {
             <Switch value={photoAssist} onValueChange={setPhotoAssist} disabled={locked || scanning}
               accessibilityLabel="QR 사진으로 상표명도 찾기" />
           </View>
-          <ExtraInfo brand={brand} onBrandChange={setBrand} store={store} onStoreChange={setStore}
+          <ExtraInfo onPrintedDomainsChange={setExtraPrintedDomains} brand={brand} onBrandChange={setBrand} store={store} onStoreChange={setStore}
             onBusyChange={setExtraBusy} disabled={locked} />
           {pendingOCR && <View style={styles.card}
             onLayout={(e) => scrollRef.current?.scrollTo({ y: Math.max(0, e.nativeEvent.layout.y - 16), animated: true })}>

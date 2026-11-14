@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ComponentRef } from 'react';
-import { CameraView, scanFromURLAsync, useCameraPermissions } from 'expo-camera';
+import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import { StatusBar } from 'expo-status-bar';
 import { ActivityIndicator, AppState, BackHandler, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
@@ -7,6 +7,8 @@ import { ActivityIndicator, AppState, BackHandler, Platform, Pressable, ScrollVi
 import { analyzeQr, type AnalyzeOutcome, type PhotoNote } from './src/api/analyze';
 import { readBrandsFromPhoto, type BrandOCRResult } from './src/api/ocr';
 import { photoForOcr } from './src/api/photo';
+import { QRPhotoError } from './src/api/qr-decode';
+import { readQRFromPhoto } from './src/api/qr-photo';
 import type { Store } from './src/api/stores';
 import { ExtraInfo } from './src/input/ExtraInfo';
 import { MOCK_RESULTS } from './src/mocks';
@@ -139,16 +141,15 @@ export default function App() {
     setMessage('카메라로 스캔하거나 QR 이미지 한 장을 선택해 주세요.');
   }
 
-  // photoAssist on: take one photo (with crop) instead of live scanning, read the QR from it on the phone,
-  // and send the cropped photo to find the brand names next to the QR.
+  // Keep the complete poster for OCR; the QR decoder uses separate local crops on failure.
   async function capturePhoto() {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) {
       setMessage('카메라 권한이 없어요. 기기 설정에서 허용하거나 사진을 선택해 주세요.');
       return;
     }
-    setMessage('QR과 주변 안내문이 같이 나오게 찍고, 자를 때 QR이 꼭 들어가게 해 주세요.');
-    const shot = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], allowsEditing: true, quality: 0.9 });
+    setMessage('QR과 주변 상표·안내문이 선명하게 같이 나오도록 찍어 주세요.');
+    const shot = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], allowsEditing: false, quality: 1 });
     if (shot.canceled) {
       setMessage('촬영을 취소했어요. 다시 찍거나 사진을 선택해 주세요.');
       return;
@@ -159,9 +160,9 @@ export default function App() {
       return;
     }
     setMessage('찍은 사진에서 QR을 읽고 있어요.');
-    const first = (await scanFromURLAsync(asset.uri, ['qr']))[0];
+    const first = await readQRFromPhoto(asset.uri, true, () => setMessage('서버에서 사진 속 QR을 읽고 있어요. 주소는 열지 않아요.'));
     if (!first) {
-      setMessage('사진에서 QR을 찾지 못했어요. 자를 때 QR 전체가 들어가게 다시 찍어 주세요.');
+      setMessage('휴대폰과 서버 모두 QR을 읽지 못했어요. 원본 QR 이미지를 선택하거나 더 선명한 사진으로 확인해 주세요.');
       return;
     }
     const parsed = readResult(first.data);
@@ -191,8 +192,10 @@ export default function App() {
       scanAccepted.current = false;
       setMessage('QR 전체를 카메라 안에 맞춰 주세요. 첫 번째로 인식한 QR만 표시해요.');
       setScanning(true);
-    } catch {
-      setMessage('카메라를 시작하지 못했어요. 권한과 카메라 사용 상태를 확인하고 다시 시도해 주세요.');
+    } catch (error) {
+      setMessage(error instanceof QRPhotoError ? error.message : error instanceof Error && error.message === 'PHOTO_QR_UNREADABLE'
+        ? '사진 파일을 QR 인식기가 처리하지 못했어요. JPG/PNG 사진을 선택하거나 실시간 스캔을 이용해 주세요.'
+        : '카메라를 시작하지 못했어요. 권한과 카메라 사용 상태를 확인하고 다시 시도해 주세요.');
     } finally {
       operation.current = false;
       setBusy(false);
@@ -223,18 +226,21 @@ export default function App() {
         return;
       }
       setMessage('선택한 이미지에서 QR을 읽고 있어요.');
-      const codes = await scanFromURLAsync(uri, ['qr']);
-      const first = codes[0];
+      const first = await readQRFromPhoto(uri, photoAssist, () => setMessage('서버에서 사진 속 QR을 읽고 있어요. 주소는 열지 않아요.'));
       if (!first) {
-        setMessage('이미지에서 QR을 찾지 못했어요. QR 전체가 선명하고 크게 나온 사진을 선택해 주세요.');
+        setMessage(photoAssist
+          ? '휴대폰과 서버 모두 QR을 읽지 못했어요. 원본 QR 이미지나 더 선명한 사진으로 확인해 주세요.'
+          : '휴대폰에서 QR을 읽지 못했어요. 사진 인식을 켜면 검사 서버에서도 QR 사진을 확인할 수 있어요.');
         return;
       }
       const parsed = readResult(first.data);
       setResult(parsed);
       // The photo leaves the phone only when photoAssist is on.
       void analyze(parsed, photoAssist ? uri : undefined);
-    } catch {
-      setMessage('사진 선택 또는 QR 인식 중 문제가 발생했어요. 사진 접근 권한을 확인하고 다른 이미지로 다시 시도해 주세요.');
+    } catch (error) {
+      setMessage(error instanceof QRPhotoError ? error.message : error instanceof Error && error.message === 'PHOTO_QR_UNREADABLE'
+        ? '사진 파일을 QR 인식기가 처리하지 못했어요. JPG/PNG 사진을 선택하거나 실시간 스캔을 이용해 주세요.'
+        : '사진 선택 또는 QR 인식 중 문제가 발생했어요. 사진 접근 권한을 확인하고 다른 이미지로 다시 시도해 주세요.');
     } finally {
       operation.current = false;
       setBusy(false);
@@ -300,7 +306,7 @@ export default function App() {
               <Text style={styles.heading}>QR 사진으로 상표명도 찾기</Text>
               <Text style={styles.note}>
                 {photoAssist
-                  ? '켜짐: 카메라 버튼은 사진 촬영으로 바뀌어요. 찍은 뒤 QR과 안내문이 들어가게 잘라 주세요. 사진이 백엔드를 거쳐 외부 BAZE AI 서버로 전송돼요. 백엔드는 영구 저장하지 않아요. 인식한 상표는 확인 후 사용해요.'
+                  ? '켜짐: 카메라 버튼은 사진 촬영으로 바뀌어요. QR과 주변 상표·안내문을 함께 찍어 주세요. 사진을 검사 서버로 보내 QR을 읽고, 인식한 주소로 상표 비교를 진행해요. 사진이 백엔드를 거쳐 외부 BAZE AI 서버로 전송돼요. 백엔드는 영구 저장하지 않아요. 인식한 상표는 확인 후 사용해요.'
                   : '켜면 QR 사진에서 상표명 후보를 찾아요. 사용자가 선택한 상표의 공식 도메인과 QR 주소를 비교해요.'}
               </Text>
             </View>

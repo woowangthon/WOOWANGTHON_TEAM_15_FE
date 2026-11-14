@@ -50,6 +50,10 @@ export type PageReport = {
   reason: string | null;
   final_url: string | null;
   download_response: boolean;
+  final_evidence?: Evidence | null;
+  readable?: boolean | null;
+  coverage?: string | null;
+  findings?: Reason[];
   password_fields: number;
   meta_refresh: boolean;
   attack_types: AttackAssessment[];
@@ -61,6 +65,8 @@ export type AnalyzeResponse = {
   hostname: string;
   evidence: Evidence;
   score: number | null;
+  score_scope?: 'ai_behavior_tls_domain_age' | 'tls_domain_age';
+  score_version?: 'behavior-v1' | 'metadata-v2';
   url_analysis: URLAnalysis;
   final_url_analysis: URLAnalysis | null;
   assessment_status: 'complete' | 'partial' | 'failed';
@@ -91,5 +97,5 @@ export type AnalyzeResponse = {
   // Why no AI explanation was made (blocked target, or AI unavailable). Shown in the AI card instead.
   explanation_skip_reason?: string | null;
   // Overall verdict (combined-v1): behavior-v1 points + URL/brand/store signals. Drives the banner.
-  verdict?: { version: 'combined-v1'; score: number | null; level: Level; reasons: { code: string; points: number; message: string }[] };
+  verdict?: { assessment_status?: 'complete' | 'partial' | 'failed'; version: 'combined-v1' | 'combined-v2'; score: number | null; level: Level; reasons: { code: string; points: number; message: string }[] };
 };

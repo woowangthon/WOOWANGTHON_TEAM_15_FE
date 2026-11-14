@@ -257,7 +257,7 @@ export default function App() {
         <Text style={styles.description}>
           {photoAssist
             ? 'QR 주소와 QR 사진을 검사 서버로 보내 위험한지 확인해요. 사이트는 자동으로 열지 않아요.'
-            : 'QR 속 주소만 검사 서버로 보내 위험한지 확인해요. QR 사진은 보내지 않고, 사이트도 자동으로 열지 않아요.'}
+            : '기본 스캔은 QR 주소를 검사 서버로 보내요. 사진 인식을 선택하면 사진도 외부 AI 서버로 전송돼요. 사이트는 자동으로 열지 않아요.'}
         </Text>
         <Pressable accessibilityRole="button" disabled={locked || !mobile || scanning} style={[styles.button, (locked || !mobile || scanning) && styles.disabled]} onPress={startCamera}>
           <Text style={styles.buttonText}>{photoAssist ? '카메라로 QR 사진 찍기' : result ? '다시 스캔하기' : '카메라로 QR 스캔'}</Text>
@@ -297,7 +297,7 @@ export default function App() {
               <Text style={styles.heading}>QR 사진으로 상표명도 찾기</Text>
               <Text style={styles.note}>
                 {photoAssist
-                  ? '켜짐: 카메라 버튼은 사진 촬영으로 바뀌어요. 찍은 뒤 QR과 안내문이 들어가게 잘라 주세요. QR 사진이 검사 서버로 전송되며 영구 저장하지 않아요. 인식한 상표는 확인 후 사용해요.'
+                  ? '켜짐: 카메라 버튼은 사진 촬영으로 바뀌어요. 찍은 뒤 QR과 안내문이 들어가게 잘라 주세요. 사진이 백엔드를 거쳐 외부 BAZE AI 서버로 전송돼요. 백엔드는 영구 저장하지 않아요. 인식한 상표는 확인 후 사용해요.'
                   : '켜면 QR 사진에서 상표명 후보를 찾아요. 사용자가 선택한 상표의 공식 도메인과 QR 주소를 비교해요.'}
               </Text>
             </View>
@@ -310,11 +310,11 @@ export default function App() {
             onLayout={(e) => scrollRef.current?.scrollTo({ y: Math.max(0, e.nativeEvent.layout.y - 16), animated: true })}>
             <Text style={styles.heading}>사진 속 상표 확인</Text>
             <Text style={styles.note}>{pendingOCR.ocr.message}</Text>
-            <Text style={styles.note}>선택한 상표를 QR 주소와 비교해요. 인식 신뢰도는 사이트 안전도가 아니에요.</Text>
+            <Text style={styles.note}>AI가 읽은 이름을 사진과 비교해 주세요. 공식 도메인 등록은 사이트 안전 판정이 아니에요.</Text>
             {pendingOCR.ocr.candidates.map((candidate) => (
               <Pressable key={candidate.brand} accessibilityRole="button" style={styles.button}
                 onPress={() => confirmOCR(candidate.brand)}>
-                <Text style={styles.buttonText}>{candidate.brand} 확인하고 검사 (글자 인식 {Math.round(candidate.ocr_confidence * 100)}%)</Text>
+                <Text style={styles.buttonText}>{candidate.brand} 확인하고 검사 ({candidate.registered ? '공식 도메인 등록' : '공식 도메인 미등록'})</Text>
               </Pressable>
             ))}
             <Pressable accessibilityRole="button" style={[styles.button, styles.secondary]}

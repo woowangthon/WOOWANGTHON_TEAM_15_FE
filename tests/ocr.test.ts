@@ -3,102 +3,87 @@ import { test } from 'node:test';
 import { parseBrandOCR, readBrandsFromPhoto } from '../src/api/ocr.ts';
 import { analyzeQr } from '../src/api/analyze.ts';
 
-const candidate = { brand: '스타벅스', matched_text: 'STARBUCKS', ocr_confidence: 0.95 };
-const fixture = (ocr_status = 'ok') => ({
-  ocr_status, brand_candidates: [candidate], brand_texts: ['스타벅스'], requires_confirmation: true,
-});
+const imageBase64 = 'iVBORw0KGgoAAAAAAAAAAAAAAAAAAAAA';
+const fixture = () => ({ status: 'ok', brands: [{ name: '스타벅스', registered: true }], domains: [], message: null });
 
-// Native FormData retains the local uri/type/name until RN serializes it on the device.
-class NativeFormData {
-  parts: [string, unknown][] = [];
-  append(name: string, value: unknown) { this.parts.push([name, value]); }
+function restoreEnv(value: string | undefined) {
+  if (value === undefined) delete process.env.EXPO_PUBLIC_API_URL;
+  else process.env.EXPO_PUBLIC_API_URL = value;
 }
 
-test('native photo upload uses the image multipart field and leaves the boundary to fetch', async t => {
-  const fetchBefore = globalThis.fetch;
-  const formBefore = globalThis.FormData;
-  const envBefore = process.env.EXPO_PUBLIC_API_URL;
-  t.after(() => {
-    globalThis.fetch = fetchBefore;
-    globalThis.FormData = formBefore;
-    if (envBefore === undefined) delete process.env.EXPO_PUBLIC_API_URL;
-    else process.env.EXPO_PUBLIC_API_URL = envBefore;
-  });
+test('AI OCR sends prepared base64 JSON only to the backend AI endpoint', async t => {
+  const before = globalThis.fetch;
+  const env = process.env.EXPO_PUBLIC_API_URL;
+  t.after(() => { globalThis.fetch = before; restoreEnv(env); });
   process.env.EXPO_PUBLIC_API_URL = 'http://localhost:8000/';
-  globalThis.FormData = NativeFormData as unknown as typeof FormData;
   let calls = 0;
   globalThis.fetch = async (url, options) => {
     calls++;
-    assert.equal(url, 'http://localhost:8000/api/ocr/brands/local');
+    assert.equal(url, 'http://localhost:8000/api/ocr/brands');
     assert.equal(options?.method, 'POST');
-    assert.equal(options?.headers, undefined);
+    assert.deepEqual(options?.headers, { 'Content-Type': 'application/json' });
+    assert.deepEqual(JSON.parse(String(options?.body)), { image_base64: imageBase64 });
     assert.equal(options?.redirect, 'error');
-    assert.deepEqual((options?.body as unknown as NativeFormData).parts, [
-      ['image', { uri: 'file:///cache/brand.jpg', type: 'image/jpeg', name: 'brand.jpg' }],
-    ]);
     return Response.json(fixture());
   };
-  const result = await readBrandsFromPhoto('file:///cache/brand.jpg');
+  const result = await readBrandsFromPhoto(imageBase64);
   assert.equal(result.status, 'ok');
-  assert.deepEqual(result.candidates, [candidate]);
-  assert.equal(calls, 1); // Reading OCR does not itself call /api/analyze.
-  assert.equal('brand_texts' in result, false); // No automatically selected brand.
+  assert.deepEqual(result.candidates, [{ brand: '스타벅스', registered: true }]);
+  assert.equal(calls, 1); // No automatic URL analysis or CPU fallback.
+  assert.equal('brand_texts' in result, false);
+  assert.equal('ocr_confidence' in result.candidates[0], false); // AI provides no numeric OCR confidence.
 });
 
-test('all backend OCR outcomes preserve uncertainty and require confirmation', () => {
-  for (const status of ['ok', 'ambiguous', 'low_confidence', 'no_text', 'no_brand']) {
-    const result = parseBrandOCR({ ...fixture(status), brand_candidates: status === 'no_text' || status === 'no_brand' ? [] : [candidate] });
-    assert.equal(result.status, status);
-    assert.ok(result.message);
+test('AI candidates, unregistered names, empty and failed results remain explicit', () => {
+  const result = parseBrandOCR({ ...fixture(), brands: [{ name: '알 수 없는 상표', registered: false }] });
+  assert.equal(result.candidates[0].registered, false);
+  assert.ok(result.message.includes('확인'));
+  const empty = parseBrandOCR({ ...fixture(), brands: [] });
+  assert.deepEqual(empty.candidates, []);
+  assert.match(empty.message, /찾지 못/);
+  for (const status of ['unavailable', 'invalid_image']) {
+    const failed = parseBrandOCR({ ...fixture(), status, message: '인식 실패' });
+    assert.deepEqual(failed.candidates, []);
+    assert.equal(failed.message, '인식 실패');
   }
   for (const value of [
-    { brands: [{ name: '스타벅스' }] },
-    { ...fixture(), requires_confirmation: false },
-    { ...fixture(), brand_candidates: [{ ...candidate, ocr_confidence: 1.2 }] },
-    { ...fixture(), ocr_status: 'safe' },
+    { ocr_status: 'ok', brand_candidates: [] },
+    { ...fixture(), brands: [{ name: '상표', registered: 'true' }] },
+    { ...fixture(), status: 'safe' },
+    { ...fixture(), brands: [{ name: '', registered: true }] },
   ]) assert.throws(() => parseBrandOCR(value));
 });
 
-test('QR target URLs are rejected without fetching an image or invoking analysis', async t => {
+test('URLs, local paths, malformed and oversized base64 never start an AI request', async t => {
   const before = globalThis.fetch;
   t.after(() => { globalThis.fetch = before; });
-  globalThis.fetch = async () => { throw new Error('must not fetch'); };
-  for (const uri of ['https://example.com/image.jpg', 'http://127.0.0.1/image.jpg', 'javascript:alert(1)']) {
-    assert.equal((await readBrandsFromPhoto(uri)).status, 'invalid_image');
+  globalThis.fetch = async () => { assert.fail('must not fetch'); };
+  for (const value of ['https://example.com/image.jpg', 'file:///cache/photo.jpg', 'invalid??', 'A'.repeat(4 * 1024 * 1024 + 4)]) {
+    assert.equal((await readBrandsFromPhoto(value)).status, 'invalid_image');
   }
 });
 
-test('upload and model failures remain readable rather than successful OCR', async t => {
-  const fetchBefore = globalThis.fetch;
-  const formBefore = globalThis.FormData;
-  const envBefore = process.env.EXPO_PUBLIC_API_URL;
-  t.after(() => {
-    globalThis.fetch = fetchBefore;
-    globalThis.FormData = formBefore;
-    if (envBefore === undefined) delete process.env.EXPO_PUBLIC_API_URL;
-    else process.env.EXPO_PUBLIC_API_URL = envBefore;
-  });
+test('AI failures and HTTP failures do not retry or silently fall back to CPU OCR', async t => {
+  const before = globalThis.fetch;
+  const env = process.env.EXPO_PUBLIC_API_URL;
+  t.after(() => { globalThis.fetch = before; restoreEnv(env); });
   process.env.EXPO_PUBLIC_API_URL = 'http://localhost:8000';
-  globalThis.FormData = NativeFormData as unknown as typeof FormData;
-  for (const code of [400, 413, 415, 422, 503, 504]) {
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return Response.json({ ...fixture(), status: 'unavailable', message: '모델 사용 불가' }); };
+  assert.equal((await readBrandsFromPhoto(imageBase64)).status, 'unavailable');
+  assert.equal(calls, 1);
+  for (const code of [413, 422, 503, 504]) {
     globalThis.fetch = async () => Response.json({ detail: '사진 처리 실패' }, { status: code });
-    const result = await readBrandsFromPhoto('file:///cache/brand.jpg');
+    const result = await readBrandsFromPhoto(imageBase64);
     assert.equal(result.status, code < 500 ? 'invalid_image' : 'unavailable');
     assert.deepEqual(result.candidates, []);
-    assert.equal(result.message, '사진 처리 실패');
   }
-  globalThis.fetch = async () => Response.json({ brands: [] });
-  assert.equal((await readBrandsFromPhoto('file:///cache/brand.jpg')).status, 'unavailable');
 });
 
-test('analysis sends only the explicitly confirmed canonical brand and supported request fields', async t => {
+test('only the brand explicitly chosen by the user enters analysis', async t => {
   const before = globalThis.fetch;
-  const envBefore = process.env.EXPO_PUBLIC_API_URL;
-  t.after(() => {
-    globalThis.fetch = before;
-    if (envBefore === undefined) delete process.env.EXPO_PUBLIC_API_URL;
-    else process.env.EXPO_PUBLIC_API_URL = envBefore;
-  });
+  const env = process.env.EXPO_PUBLIC_API_URL;
+  t.after(() => { globalThis.fetch = before; restoreEnv(env); });
   process.env.EXPO_PUBLIC_API_URL = 'http://localhost:8000';
   const requests: unknown[] = [];
   globalThis.fetch = async (url, options) => {
@@ -106,32 +91,20 @@ test('analysis sends only the explicitly confirmed canonical brand and supported
     requests.push(JSON.parse(String(options?.body)));
     return Response.json({});
   };
-  const confirmed = parseBrandOCR(fixture()).candidates[0].brand;
-  await analyzeQr('https://example.com', 'https://example.com', { brandTexts: [confirmed] });
+  const selected = parseBrandOCR(fixture()).candidates[0].brand;
+  await analyzeQr('https://example.com', 'https://example.com', { brandTexts: [selected] });
   await analyzeQr('https://example.com', 'https://example.com');
-  assert.deepEqual(requests, [
-    { qr_text: 'https://example.com', brand_texts: ['스타벅스'], store_id: null, include_ai: true, inspect_page: true, include_explanation: true },
-    { qr_text: 'https://example.com', brand_texts: [], store_id: null, include_ai: true, inspect_page: true, include_explanation: true },
-  ]);
+  assert.deepEqual(requests.map((r) => (r as { brand_texts: string[] }).brand_texts), [['스타벅스'], []]);
 });
 
-test('browser local images use a real multipart file rather than base64 JSON', async t => {
+test('image data URI prefixes are stripped before the JSON request', async t => {
   const before = globalThis.fetch;
-  const envBefore = process.env.EXPO_PUBLIC_API_URL;
-  t.after(() => {
-    globalThis.fetch = before;
-    if (envBefore === undefined) delete process.env.EXPO_PUBLIC_API_URL;
-    else process.env.EXPO_PUBLIC_API_URL = envBefore;
-  });
+  const env = process.env.EXPO_PUBLIC_API_URL;
+  t.after(() => { globalThis.fetch = before; restoreEnv(env); });
   process.env.EXPO_PUBLIC_API_URL = 'http://localhost:8000';
-  const dataUri = 'data:image/png;base64,iVBORw0KGgo=';
-  globalThis.fetch = async (url, options) => {
-    if (url === dataUri) return new Response(new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' }));
-    const file = (options?.body as FormData).get('image') as File;
-    assert.equal(file.name, 'brand.png');
-    assert.equal(file.type, 'image/png');
-    assert.equal(file.size, 4);
-    return Response.json({ ...fixture('no_text'), brand_candidates: [] });
+  globalThis.fetch = async (_url, options) => {
+    assert.deepEqual(JSON.parse(String(options?.body)), { image_base64: imageBase64 });
+    return Response.json(fixture());
   };
-  assert.equal((await readBrandsFromPhoto(dataUri)).status, 'no_text');
+  assert.equal((await readBrandsFromPhoto('data:image/png;base64,' + imageBase64)).status, 'ok');
 });

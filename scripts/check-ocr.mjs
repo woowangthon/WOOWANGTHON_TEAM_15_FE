@@ -1,5 +1,5 @@
 // Opt-in live OCR check. It uploads only the supplied photo to your configured backend.
-// No target page or paid AI call: analysis below deliberately uses a blocked loopback URL.
+// This makes one paid AI OCR call. Later analysis uses a blocked loopback URL, so no page AI runs.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { loadEnvFile } from 'node:process';
@@ -15,10 +15,10 @@ if (!imagePath || !expectedBrand) {
 } else {
   try {
     const bytes = await readFile(imagePath);
-    assert.ok(bytes.length <= 5 * 1024 * 1024, 'Photo must be <= 5MiB');
+    assert.ok(bytes.length <= 3 * 1024 * 1024, 'Photo must be <= 3MiB');
     const mime = /\.png$/i.test(imagePath) ? 'image/png' : 'image/jpeg';
     const ocr = await readBrandsFromPhoto(`data:${mime};base64,${bytes.toString('base64')}`);
-    assert.ok(ocr.candidates.some(c => c.brand === expectedBrand), `Expected brand was not recognized: ${ocr.status}`);
+    assert.ok(ocr.candidates.some(c => c.brand === expectedBrand), `Expected brand was not recognized: ${ocr.status} (${ocr.message})`);
     const blockedUrl = 'https://127.0.0.1';
     const outcome = await analyzeQr(blockedUrl, blockedUrl, { brandTexts: [expectedBrand] });
     assert.equal(outcome.kind, 'analysis');
@@ -26,7 +26,7 @@ if (!imagePath || !expectedBrand) {
     assert.equal(outcome.data.url_analysis?.brand_domain.brand, expectedBrand);
     assert.equal(outcome.data.url_analysis?.brand_domain.status, 'mismatched');
     assert.equal(outcome.data.navigation_allowed, false);
-    console.log('PASS: frontend multipart upload -> real OCR -> canonical brand -> backend analysis');
+    console.log('PASS: frontend base64 JSON -> BAZE AI OCR -> canonical brand -> backend analysis');
     console.log(JSON.stringify({ ocr_status: ocr.status, brand: expectedBrand, navigation_allowed: outcome.data.navigation_allowed }));
   } catch (error) {
     console.error(error instanceof Error ? error.message : 'OCR integration failed');

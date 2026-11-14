@@ -32,15 +32,15 @@ npx expo start --clear
 ```
 
 설치된 SDK를 지원하는 Expo Go로 테스트합니다. 환경 변수나 의존성을 변경하면 앱을 다시 로드하세요.
-새 PC의 백엔드에는 OCR 의존성과 모델 준비가 필요합니다. 백엔드의 app/docs/ocr_api.md를 참고하세요.
+AI OCR은 백엔드의 BAZE 키와 이미지 지원 모델을 사용합니다. EasyOCR 모델 설치는 선택용 CPU API에만 필요합니다.
 
 ## QR와 OCR 분석
 
 - 기본 스캔은 기기에서 QR URL을 읽어 POST /api/analyze로 전송합니다.
-- 'QR 사진으로 상표명도 찾기'를 켜면 사진을 JPEG로 변환·축소해 POST /api/ocr/brands/local에 multipart image 파일로 업로드합니다.
+- 'QR 사진으로 상표명도 찾기'를 켜면 사진을 JPEG base64로 변환·축소해 POST /api/ocr/brands의 JSON image_base64로 전송합니다. 백엔드가 외부 BAZE AI로 사진을 보냅니다.
 - 상표 후보를 확인하거나 상표 비교를 건너뛴 후 분석합니다. 선택한 정규 상표명은 brand_texts로 전달합니다.
 - '추가 정보'에서 상표명을 직접 입력하거나 별도 상표 사진을 읽고 매장을 선택할 수 있습니다.
-- 사진 속 일반 웹 주소 추출은 이 CPU OCR 흐름에 포함하지 않습니다.
+- AI API는 사진 속 주소도 반환하지만 현재 화면에서는 상표 후보만 사용합니다.
 - 분석 요청은 include_ai, inspect_page, include_explanation을 true로 보냅니다. 서버가 제한된 페이지 검사와 AI 분석을 수행합니다.
 - 결과는 종합 판정과 확인된 항목·누락된 정보를 보여줍니다. 인식 실패나 0점이 안전을 보증하지 않습니다.
 - QR 사이트는 자동으로 열리지 않습니다. 결과 화면에서 사용자 선택과 확인 후 외부 브라우저를 열 수 있습니다.
@@ -59,5 +59,5 @@ npm run check:ocr -- "C:/photos/starbucks.jpg" "스타벅스"
 
 check:api는 실행 중인 서버의 상태·응답 스키마·Expo Web CORS를 확인합니다.
 Expo Web을 사용하면 백엔드 CORS_ORIGINS에 해당 웹 origin을 등록해야 합니다.
-check:ocr는 지정한 사진의 실제 OCR과 상표 전달을 확인하며 대상 사이트 접속·유료 AI 호출은 수행하지 않습니다.
+check:ocr는 지정한 사진의 AI OCR을 1회 호출하므로 사용량이 발생할 수 있습니다. 이후 상표 전달 검사는 차단 주소를 사용하여 대상 사이트 접속·페이지 AI 호출 없이 확인합니다.
 카메라 권한, 촬영·앨범 선택, 취소, 상표 후보 확인은 휴대폰에서 추가로 확인하세요.

@@ -30,7 +30,7 @@ export function ExtraInfo({
   const [candidates, setCandidates] = useState<BrandCandidate[]>([]);
   const [ocrMessage, setOcrMessage] = useState<string | null>(null);
 
-  // Photo → server CPU OCR → brand-name candidates the person picks from. Nothing is filled in automatically.
+  // Photo → server BAZE vision OCR → brand-name candidates the person picks from. Nothing is filled in automatically.
   async function readFromPhoto(source: 'camera' | 'library') {
     setReading(true);
     onBusyChange(true);
@@ -117,7 +117,7 @@ export function ExtraInfo({
             <Text style={styles.searchButtonText}>앨범에서 찾기</Text>
           </Pressable>
         </View>
-        <Text style={styles.hint}>상표가 보이는 부분만 잘라 주세요. 사진은 상표명을 읽는 데만 검사 서버로 보내고 저장하지 않아요.</Text>
+        <Text style={styles.hint}>상표가 보이는 부분만 잘라 주세요. 사진은 백엔드를 거쳐 외부 BAZE AI 서버로 보내요. 백엔드는 영구 저장하지 않아요.</Text>
         {reading && <ActivityIndicator accessibilityLabel="사진에서 상표명 읽는 중" color="#2256CF" />}
         {ocrMessage && <Text style={styles.hint}>{ocrMessage}</Text>}
         {candidates.length > 0 && <>
@@ -128,7 +128,7 @@ export function ExtraInfo({
                 style={[styles.chip, brand.trim() === c.brand && styles.chipSelected]}
                 onPress={() => { onBrandChange(c.brand); setCandidates([]); setOcrMessage(null); }}>
                 <Text style={styles.chipText}>{c.brand}</Text>
-                <Text style={styles.chipNote}>글자 인식 {Math.round(c.ocr_confidence * 100)}%</Text>
+                <Text style={styles.chipNote}>{c.registered ? '공식 도메인 등록' : '공식 도메인 미등록'}</Text>
               </Pressable>
             ))}
           </View>

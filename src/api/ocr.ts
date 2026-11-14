@@ -1,77 +1,64 @@
-// Local JPEG/PNG file -> FastAPI's multipart OCR endpoint. Candidates need user confirmation.
-export type BrandCandidate = { brand: string; matched_text: string; ocr_confidence: number };
-export type OCRStatus = 'ok' | 'no_text' | 'no_brand' | 'low_confidence' | 'ambiguous';
+// BAZE vision OCR: prepared image base64 -> backend JSON API. Candidates need user confirmation.
+export type BrandCandidate = { brand: string; registered: boolean };
 export type BrandOCRResult = {
-  status: OCRStatus | 'unavailable' | 'invalid_image';
+  status: 'ok' | 'unavailable' | 'invalid_image';
   candidates: BrandCandidate[];
   message: string;
 };
 
-const TIMEOUT_MS = 45_000; // Backend CPU OCR timeout is 30 seconds; allow transport overhead.
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-const MESSAGES: Record<OCRStatus, string> = {
-  ok: '찾은 상표가 맞는지 확인한 뒤 선택해 주세요. 글자 인식 신뢰도는 사이트의 안전도를 뜻하지 않아요.',
-  no_text: '글자를 읽지 못했어요. 밝고 선명한 사진으로 다시 시도하거나 상표명을 직접 입력해 주세요.',
-  no_brand: '등록된 상표를 찾지 못했어요. 상표명을 직접 입력할 수 있어요.',
-  low_confidence: '글자 인식 신뢰도가 낮아요. 후보가 실제 상표와 맞는지 확인하거나 다시 촬영해 주세요.',
-  ambiguous: '여러 상표가 보여요. QR에 해당하는 상표 하나를 선택해 주세요.',
-};
+const TIMEOUT_MS = 25_000; // Backend AI OCR timeout is 18 seconds.
+const MAX_BASE64_CHARS = 4 * 1024 * 1024; // 3MiB of decoded image data.
+const CONFIRM_MESSAGE = 'AI가 읽은 상표 후보예요. 실제 상표와 맞는지 확인한 뒤 선택해 주세요.';
 
 export function parseBrandOCR(value: unknown): BrandOCRResult {
   const body = value as Record<string, unknown> | null;
-  const status = body?.ocr_status;
-  if (!body || typeof status !== 'string' || !Object.hasOwn(MESSAGES, status) ||
-      body.requires_confirmation !== true || !Array.isArray(body.brand_candidates) ||
-      body.brand_candidates.length > 10) throw new Error('OCR 응답 형식이 올바르지 않아요.');
-  const candidates = body.brand_candidates.map((candidate: unknown): BrandCandidate => {
-    const c = candidate as Partial<BrandCandidate> | null;
-    if (!c || typeof c.brand !== 'string' || !c.brand.trim() || c.brand.length > 200 ||
-        typeof c.matched_text !== 'string' || typeof c.ocr_confidence !== 'number' ||
-        !Number.isFinite(c.ocr_confidence) || c.ocr_confidence < 0 || c.ocr_confidence > 1) {
-      throw new Error('OCR 후보 형식이 올바르지 않아요.');
-    }
-    return { brand: c.brand, matched_text: c.matched_text, ocr_confidence: c.ocr_confidence };
+  if (!body || !['ok', 'unavailable', 'invalid_image'].includes(String(body.status)) ||
+      !Array.isArray(body.brands) || body.brands.length > 5 ||
+      (body.message !== null && body.message !== undefined && typeof body.message !== 'string')) {
+    throw new Error('AI OCR 응답 형식이 올바르지 않아요.');
+  }
+  const candidates = body.brands.map((value: unknown): BrandCandidate => {
+    const item = value as { name?: unknown; registered?: unknown } | null;
+    if (!item || typeof item.name !== 'string' || !item.name.trim() || item.name.length > 30 ||
+        typeof item.registered !== 'boolean') throw new Error('AI OCR 후보 형식이 올바르지 않아요.');
+    return { brand: item.name, registered: item.registered };
   });
-  // Never automatically forward the backend's suggested brand_texts to analysis.
-  return { status: status as OCRStatus, candidates, message: MESSAGES[status as OCRStatus] };
+  const status = body.status as BrandOCRResult['status'];
+  return {
+    status, candidates: status === 'ok' ? candidates : [],
+    message: typeof body.message === 'string' && body.message.trim() ? body.message
+      : status !== 'ok' ? 'AI가 사진을 처리하지 못했어요. 다시 시도하거나 상표명을 직접 입력해 주세요.'
+      : candidates.length ? CONFIRM_MESSAGE : '사진에서 상표를 찾지 못했어요. 다시 촬영하거나 상표명을 직접 입력해 주세요.',
+  };
 }
 
-export async function readBrandsFromPhoto(uri: string): Promise<BrandOCRResult> {
+export async function readBrandsFromPhoto(imageBase64: string): Promise<BrandOCRResult> {
   const fail = (status: 'invalid_image' | 'unavailable', message: string): BrandOCRResult =>
     ({ status, candidates: [], message });
-  // A QR target URL must never be fetched as an image by the phone.
-  if (!/^(file|content|blob):/i.test(uri) && !/^data:image\/(jpeg|png);base64,/i.test(uri)) {
-    return fail('invalid_image', '기기에 있는 JPEG/PNG 사진을 선택해 주세요.');
+  const base64 = imageBase64.replace(/^data:image\/(jpeg|png|webp);base64,/i, '');
+  // A phone file URI or a QR target URL cannot be used as an AI image URL.
+  if (base64.length < 16 || base64.length > MAX_BASE64_CHARS || base64.length % 4 !== 0 ||
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(base64)) {
+    return fail('invalid_image', '3MiB 이하의 사진을 준비하지 못했어요. 상표 부분을 잘라 다시 선택해 주세요.');
   }
   const apiUrl = process.env.EXPO_PUBLIC_API_URL?.trim().replace(/\/+$/, '');
   if (!apiUrl) return fail('unavailable', '검사 서버 주소가 설정되지 않았어요.');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const form = new FormData();
-    if (/^(file|content):/i.test(uri)) {
-      // React Native FormData reads local files using uri/type/name.
-      // RN supports local file descriptors, while the shared DOM type only exposes Blob.
-      form.append('image', { uri, name: 'brand.jpg', type: 'image/jpeg' } as unknown as Blob);
-    } else {
-      // Browser-generated local blob/data URI; never an HTTP(S) image URL.
-      const image = await fetch(uri, { signal: controller.signal });
-      const blob = await image.blob();
-      if (blob.size > MAX_IMAGE_BYTES) return fail('invalid_image', '사진은 5MiB 이하여야 해요.');
-      form.append('image', blob, blob.type === 'image/png' ? 'brand.png' : 'brand.jpg');
-    }
-    const response = await fetch(`${apiUrl}/api/ocr/brands/local`, {
-      method: 'POST', body: form, signal: controller.signal, redirect: 'error',
-      // Fetch sets the multipart Content-Type including its boundary.
+    const response = await fetch(`${apiUrl}/api/ocr/brands`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image_base64: base64 }),
+      signal: controller.signal, redirect: 'error',
     });
     const body = await response.json().catch(() => null);
     if (response.ok) return parseBrandOCR(body);
-    const message = typeof body?.detail === 'string' ? body.detail : '사진을 처리하지 못했어요. 다시 시도하거나 상표명을 직접 입력해 주세요.';
+    const message = typeof body?.detail === 'string' ? body.detail : 'AI가 사진을 처리하지 못했어요. 다시 시도하거나 상표명을 직접 입력해 주세요.';
     return fail([400, 413, 415, 422].includes(response.status) ? 'invalid_image' : 'unavailable', message);
   } catch (error) {
     return fail('unavailable', error instanceof Error && error.name === 'AbortError'
-      ? '문자인식 대기 시간이 초과됐어요. 잠시 후 다시 시도해 주세요.'
-      : '문자인식 응답을 받지 못했어요. 서버 연결을 확인하거나 상표명을 직접 입력해 주세요.');
+      ? 'AI 문자인식 대기 시간이 초과됐어요. 잠시 후 다시 시도해 주세요.'
+      : 'AI 문자인식 응답을 받지 못했어요. 서버 연결을 확인하거나 상표명을 직접 입력해 주세요.');
   } finally {
     clearTimeout(timer);
   }

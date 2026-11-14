@@ -12,6 +12,7 @@ import { searchStores, type Store } from '../api/stores';
 type Props = {
   brand: string;
   onBrandChange: (value: string) => void;
+  onPrintedDomainsChange: (value: string[]) => void;
   store: Store | null;
   onStoreChange: (store: Store | null) => void;
   onBusyChange: (busy: boolean) => void;
@@ -19,7 +20,7 @@ type Props = {
 };
 
 export function ExtraInfo({
-  brand, onBrandChange, store, onStoreChange, onBusyChange, disabled,
+  brand, onBrandChange, onPrintedDomainsChange, store, onStoreChange, onBusyChange, disabled,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [keyword, setKeyword] = useState('');
@@ -50,6 +51,7 @@ export function ExtraInfo({
         ? await ImagePicker.launchCameraAsync(options)
         : await ImagePicker.launchImageLibraryAsync(options);
       if (picked.canceled) return;
+      onPrintedDomainsChange([]);
       const uri = picked.assets[0]?.uri;
       const photoUri = uri ? await photoForOcr(uri) : null;
       if (!photoUri) {
@@ -58,6 +60,7 @@ export function ExtraInfo({
       }
       const result = await readBrandsFromPhoto(photoUri);
       setCandidates(result.candidates);
+      onPrintedDomainsChange(result.printedDomains);
       setOcrMessage(result.message);
     } catch {
       setOcrMessage('사진을 가져오지 못했어요. 상표명을 직접 입력해 주세요.');
@@ -128,7 +131,7 @@ export function ExtraInfo({
                 style={[styles.chip, brand.trim() === c.brand && styles.chipSelected]}
                 onPress={() => { onBrandChange(c.brand); setCandidates([]); setOcrMessage(null); }}>
                 <Text style={styles.chipText}>{c.brand}</Text>
-                <Text style={styles.chipNote}>{c.registered ? '공식 도메인 등록' : '공식 도메인 미등록'}</Text>
+                <Text style={styles.chipNote}>선택하면 AI가 공식 주소를 검색해요</Text>
               </Pressable>
             ))}
           </View>

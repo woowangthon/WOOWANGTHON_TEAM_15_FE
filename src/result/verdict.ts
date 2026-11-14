@@ -6,7 +6,7 @@ import type { AnalyzeResponse, AttackType, Level, Severity, URLAnalysis } from '
 
 export type Tone = 'danger' | 'caution' | 'unknown' | 'low';
 const LEVEL_TONE: Record<Level, Tone> = { 위험: 'danger', 주의: 'caution', 낮음: 'low', '확인 불가': 'unknown' };
-export type CheckTone = 'danger' | 'caution' | 'ok' | 'unknown' | 'info';
+export type CheckTone = 'danger' | 'caution' | 'ok' | 'unknown' | 'info' | 'not_checked';
 export type CheckItem = { key: string; label: string; tone: CheckTone; detail: string };
 
 export type Verdict = {
@@ -14,6 +14,8 @@ export type Verdict = {
   title: string;
   summary: string;
   score: number | null;
+  scoreLabel: string;
+  assessmentNote: string | null;
   reasons: string[];
   checks: CheckItem[];
   canOpen: boolean;
@@ -27,6 +29,13 @@ const ATTACK_NAMES: Record<AttackType, string> = {
   unsafe_installation: '앱·파일 설치 유도',
 };
 const SEVERITY_RANK: Record<Severity, number> = { unknown: -1, none: 0, weak: 1, moderate: 2, strong: 3 };
+
+export function checkStatusLabel(check: CheckItem): string {
+  if (check.tone === 'ok') {
+    return ['shape', 'download', 'page'].includes(check.key) ? '신호 미발견' : '확인됨';
+  }
+  return { danger: '위험', caution: '주의', unknown: '확인 불가', info: '참고', not_checked: '미검사' }[check.tone];
+}
 
 function formatAge(days: number): string {
   if (days < 1) return '오늘';
@@ -65,7 +74,7 @@ function tlsCheck(d: AnalyzeResponse): CheckItem {
 function locationCheck(d: AnalyzeResponse): CheckItem {
   const geo = d.evidence.geoip;
   const label = '서버 위치';
-  if (geo.status === 'ok' && geo.is_overseas !== null) {
+  if (geo.status === 'ok' && typeof geo.is_overseas === 'boolean') {
     const codes = [...new Set(geo.countries.map((c) => c.country_code).filter(Boolean))].join(', ');
     return geo.is_overseas
       ? { key: 'geo', label, tone: 'info', detail: `해외에 있는 서버예요.${codes ? ` (${codes})` : ''} 해외 서버라고 모두 위험한 것은 아니에요.` }
@@ -83,9 +92,23 @@ function urlChecks(d: AnalyzeResponse): { analysis: URLAnalysis; prefix: string 
 }
 
 function combineChecks(key: string, label: string, checks: CheckItem[]): CheckItem {
-  const rank: Record<CheckTone, number> = { info: 0, ok: 1, unknown: 2, caution: 3, danger: 4 };
-  const tone = checks.reduce<CheckTone>((worst, check) => rank[check.tone] > rank[worst] ? check.tone : worst, 'info');
+  const rank: Record<CheckTone, number> = { not_checked: 0, info: 0, ok: 1, unknown: 2, caution: 3, danger: 4 };
+  const tone = checks.reduce<CheckTone>((worst, check) => rank[check.tone] > rank[worst] ? check.tone : worst, checks[0]?.tone ?? 'info');
   return { key, label, tone, detail: checks.map((check) => check.detail).join(' ') };
+}
+
+function metadataCheck(d: AnalyzeResponse, check: (data: AnalyzeResponse) => CheckItem): CheckItem {
+  const source = check(d);
+  const finalUrl = d.page?.final_url;
+  if (!finalUrl || new URL(finalUrl).host === new URL(d.url).host) return source;
+  const evidence = d.page?.final_evidence;
+  const final = evidence ? check({ ...d, url: finalUrl, evidence }) : {
+    ...source, tone: 'unknown' as const, detail: '최종 이동 주소의 정보를 확인하지 못했어요.',
+  };
+  return combineChecks(source.key, source.label, [
+    { ...final, detail: '최종 이동 주소: ' + final.detail },
+    { ...source, detail: 'QR의 원래 주소: ' + source.detail },
+  ]);
 }
 
 function urlShapeCheck(d: AnalyzeResponse): CheckItem {
@@ -98,8 +121,8 @@ function urlShapeCheck(d: AnalyzeResponse): CheckItem {
     if (s.pattern_codes.includes('USERINFO_IN_URL')) notes.push('주소에 @가 들어 있어 실제 목적지를 속일 수 있어요.');
     if (s.redirect_pattern_detected) notes.push('다른 주소로 넘겨주는 형태가 들어 있어요.');
     if (notes.length) return { key: 'shape', label, tone: 'caution', detail: prefix + notes.join(' ') };
-    if (s.suspicious_url_pattern === null) return { key: 'shape', label, tone: 'unknown', detail: prefix + '주소 형태를 확인하지 못했어요.' };
-    return { key: 'shape', label, tone: 'ok', detail: prefix + '검사한 주소에서 단축 URL·IP 주소 같은 의심 형태를 찾지 못했어요.' };
+    if (s.url_valid !== true || typeof s.suspicious_url_pattern !== 'boolean' || typeof s.redirect_pattern_detected !== 'boolean') return { key: 'shape', label, tone: 'unknown', detail: prefix + '주소 형태를 확인하지 못했어요.' };
+    return { key: 'shape', label, tone: 'ok', detail: prefix + '검사한 주소에서 등록된 단축 주소·IP 주소·이동 매개변수 등의 패턴이 발견되지 않았어요. 알려지지 않은 단축 서비스는 놓칠 수 있어요.' };
   });
   return combineChecks('shape', label, checks);
 }
@@ -113,15 +136,42 @@ function downloadCheck(d: AnalyzeResponse): CheckItem {
       prefix + '앱·실행 파일(.apk, .exe 등)을 내려받는 형태의 링크예요.').join(' ') };
   }
   if (d.page?.download_response) return { key: 'download', label, tone: 'danger', detail: '대상 서버가 파일 다운로드 응답을 반환했어요.' };
-  if (d.page?.status !== 'ok') {
+  if (d.page?.findings?.some((finding) => finding.code === 'PAGE_EXECUTABLE_LINK')) {
+    return { key: 'download', label, tone: 'info', detail: '정적 페이지에 실행·설치 파일 링크가 있어요. 링크의 존재만으로 악성을 단정하지 않으며, 파일 자체는 내려받거나 검사하지 않았어요.' };
+  }
+  if (d.score_scope === 'tls_domain_age' && urlChecks(d).every(({ analysis }) =>
+    analysis.risk_signals.url_valid === true && typeof analysis.risk_signals.suspicious_url_pattern === 'boolean')) {
+    return { key: 'download', label, tone: 'ok', detail: '검사한 URL에서 실행 파일 확장자 신호를 찾지 못했어요. 페이지 안의 다운로드 유도 여부를 보장하는 검사는 아니에요.' };
+  }
+  if (d.page?.status !== 'ok' || d.page.readable === false || d.page.meta_refresh || urlChecks(d).some(({ analysis }) => analysis.risk_signals.url_valid !== true || typeof analysis.risk_signals.suspicious_url_pattern !== 'boolean')) {
     return { key: 'download', label, tone: 'unknown', detail: '검사한 주소에서 실행 파일 확장자를 찾지 못했지만, 페이지 내용을 확인하지 못해 다운로드 유도 여부는 확인하지 못했어요.' };
   }
-  return { key: 'download', label, tone: 'ok', detail: '검사한 주소에서 실행 파일 링크나 파일 다운로드 응답을 찾지 못했어요.' };
+  return { key: 'download', label, tone: 'ok', detail: '검사한 URL과 정적 페이지 응답에서 실행 파일 링크·다운로드 응답 신호가 발견되지 않았어요. 파일 자체나 JavaScript 실행 결과는 검사하지 않았어요.' };
 }
 
 function brandCheck(d: AnalyzeResponse, brandTexts: string[]): CheckItem {
   const label = '공식 도메인 비교';
+  if (urlChecks(d).some(({ analysis }) => analysis.brand_domain.source === 'ai_web_search')) {
+    const checks = urlChecks(d).map(({ analysis, prefix }): CheckItem => {
+      const report = analysis.brand_domain;
+      const status = analysis.risk_signals.brand_domain_status;
+      const reason = typeof report.reason === 'string' ? report.reason : '공식 여부를 확인하지 못했어요.';
+      const sources = Array.isArray(report.sources)
+        ? report.sources.filter((s): s is string => typeof s === 'string').slice(0, 2) : [];
+      const evidence = sources.length ? ` 검색 출처: ${sources.join(', ')}` : '';
+      const note = status === 'matched' ? ' 공식 주소 판정은 합법성이나 전체 안전을 보장하지 않아요.' : '';
+      return {
+        key: 'brand', label: '공식 도메인 (AI 검색)',
+        tone: status === 'matched' ? 'ok' : status === 'mismatched' ? 'danger' : 'unknown',
+        detail: prefix + reason + note + evidence,
+      };
+    });
+    return combineChecks('brand', '공식 도메인 (AI 검색)', checks);
+  }
   const entered = brandTexts.map((b) => b.trim()).filter(Boolean);
+  if (entered.length === 0) {
+    return { key: 'brand', label, tone: 'not_checked', detail: '상표명을 입력하지 않아 공식 도메인 비교를 하지 않았어요. 추가 정보에 상표명을 넣으면 비교할 수 있어요.' };
+  }
   const checks = urlChecks(d).map(({ analysis, prefix }): CheckItem => {
     const compared = typeof analysis.brand_domain.brand === 'string' ? analysis.brand_domain.brand : null;
     const name = compared ?? entered[0];
@@ -131,9 +181,6 @@ function brandCheck(d: AnalyzeResponse, brandTexts: string[]): CheckItem {
       case 'mismatched':
         return { key: 'brand', label, tone: 'danger', detail: prefix + `'${name}'의 공식 도메인과 달라요. 사칭 사이트일 수 있어요.` };
       default:
-        if (entered.length === 0) {
-          return { key: 'brand', label, tone: 'info', detail: prefix + '상표명을 입력하지 않아 비교하지 않았어요. 추가 정보에 상표명을 넣으면 사칭 여부도 확인해요.' };
-        }
         return { key: 'brand', label, tone: 'unknown', detail: prefix + `'${entered.join(', ')}'의 공식 도메인을 확인하지 못했어요.` };
     }
   });
@@ -193,8 +240,13 @@ function storeCheck(d: AnalyzeResponse): CheckItem | null {
 }
 
 function pageCheck(d: AnalyzeResponse): CheckItem {
+  if (d.score_scope === 'tls_domain_age') {
+    const reference = pageCheck({ ...d, score_scope: 'ai_behavior_tls_domain_age' });
+    return { ...reference, label: '페이지 내용 (참고)', tone: 'info',
+      detail: reference.detail + ' 페이지 AI 결과는 위험 점수와 종합 판정에 반영하지 않아요.' };
+  }
   const label = '페이지 내용 (AI 분석)';
-  if (d.ai_status !== 'generated' && d.ai_status !== 'cached') {
+  if ((d.ai_status !== 'generated' && d.ai_status !== 'cached') || d.page?.status !== 'ok' || (d.page.ai_status !== 'generated' && d.page.ai_status !== 'cached')) {
     const why = d.page?.status === 'blocked' ? '보안상 페이지를 열어보지 않았어요.'
       : d.page?.status === 'not_applicable' ? '파일 주소라 페이지 내용을 열어보지 않았어요.'
         : d.page?.reason ? `페이지 내용을 확인하지 못했어요. (${d.page.reason})` : 'AI 분석을 하지 못했어요.';
@@ -203,7 +255,12 @@ function pageCheck(d: AnalyzeResponse): CheckItem {
   const worst = d.attack_types.reduce<{ type: AttackType; severity: Severity } | null>(
     (best, a) => (!best || SEVERITY_RANK[a.severity] > SEVERITY_RANK[best.severity] ? a : best), null);
   if (!worst || SEVERITY_RANK[worst.severity] <= 0) {
-    return { key: 'page', label, tone: 'ok', detail: '개인정보·결제·설치를 요구하는 내용을 찾지 못했어요.' };
+    const complete = d.attack_types.length === 4 && Object.keys(ATTACK_NAMES).every(
+      (type) => d.attack_types.filter((a) => a.type === type && a.severity === 'none').length === 1);
+    if (!complete || d.page.readable === false || d.page.meta_refresh) {
+      return { key: 'page', label, tone: 'unknown', detail: 'AI 분석에서 일부 행동 유형이나 페이지 내용을 확인하지 못했어요. 위험 신호가 없다고 판단할 수 없어요.' };
+    }
+    return { key: 'page', label, tone: 'ok', detail: '검사한 정적 페이지 범위에서 인증정보·개인정보 탈취, 금전 피해, 위험한 설치 유도 신호가 발견되지 않았어요. JavaScript 실행 후 화면이나 이후 이동은 확인하지 않았어요.' };
   }
   const name = ATTACK_NAMES[worst.type];
   if (worst.severity === 'strong') return { key: 'page', label, tone: 'danger', detail: `${name} 내용이 강하게 의심돼요.` };
@@ -227,18 +284,26 @@ export function buildVerdict(d: AnalyzeResponse, brandTexts: string[] = []): Ver
   const printed = printedCheck(d);
   const words = domainWordsCheck(d);
   checks.push(downloadCheck(d), brandCheck(d, brandTexts), ...(words ? [words] : []), ...(printed ? [printed] : []), ...(store ? [store] : []), urlShapeCheck(d),
-    domainAgeCheck(d), tlsCheck(d), locationCheck(d), pageCheck(d));
+    metadataCheck(d, domainAgeCheck), metadataCheck(d, tlsCheck), metadataCheck(d, locationCheck), pageCheck(d));
 
   // The backend's combined-v1 verdict is the single source of truth for the banner and score.
   // Older backends without it fall back to the worse of behavior-v1 level and the check badges.
   const has = (t: CheckTone) => checks.some((c) => c.tone === t);
-  const tone: Tone = d.verdict
+  let tone: Tone = d.verdict
     ? LEVEL_TONE[d.verdict.level]
     : blocked || d.level === '위험' || has('danger') ? 'danger'
       : d.level === '주의' || has('caution') ? 'caution'
         : d.level === '낮음' ? 'low'
           : 'unknown';
   const score = d.verdict ? d.verdict.score : d.score;
+  const complete = (d.verdict?.assessment_status ?? d.assessment_status) === 'complete' && !has('unknown');
+  // Older backend responses can contain a low verdict despite unknown check details.
+  if (tone === 'low' && !complete) tone = 'unknown';
+  const unknown = checks.filter((c) => c.tone === 'unknown').map((c) => c.label);
+  const scoreLabel = score === null ? '위험 점수 산출 불가'
+    : `${complete ? '위험 점수' : '확인된 위험 점수'} ${score}점`;
+  const assessmentNote = complete ? null
+    : `검사 미완료${unknown.length ? `: ${unknown.join(', ')}` : ''}. 점수는 확인된 위험 신호만 반영하며, 확인하지 못한 항목을 안전으로 계산하지 않아요.`;
 
   const reasons = [...checks.filter((c) => c.tone === 'danger'), ...checks.filter((c) => c.tone === 'caution')]
     .map((c) => c.detail);
@@ -251,5 +316,5 @@ export function buildVerdict(d: AnalyzeResponse, brandTexts: string[] = []): Ver
   };
 
   const finalUrl = d.page?.final_url && d.page.final_url !== d.url ? d.page.final_url : null;
-  return { tone, ...copy[tone], score, reasons, checks, canOpen: !blocked, finalUrl };
+  return { tone, ...copy[tone], score, scoreLabel, assessmentNote, reasons, checks, canOpen: !blocked, finalUrl };
 }

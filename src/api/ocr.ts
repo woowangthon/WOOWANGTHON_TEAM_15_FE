@@ -3,6 +3,7 @@ export type BrandCandidate = { brand: string; registered: boolean };
 export type BrandOCRResult = {
   status: 'ok' | 'unavailable' | 'invalid_image';
   candidates: BrandCandidate[];
+  printedDomains: string[];
   message: string;
 };
 
@@ -23,18 +24,30 @@ export function parseBrandOCR(value: unknown): BrandOCRResult {
         typeof item.registered !== 'boolean') throw new Error('AI OCR 후보 형식이 올바르지 않아요.');
     return { brand: item.name, registered: item.registered };
   });
+  const rawDomains = body.domains ?? [];
+  if (!Array.isArray(rawDomains) || rawDomains.length > 5) throw new Error('OCR domain format');
+  const printedDomains = rawDomains.map((value: unknown): string => {
+    const item = value as { domain?: unknown } | null;
+    if (!item || typeof item.domain !== 'string' || item.domain.length > 253 ||
+        !/^[a-z0-9.-]+$/i.test(item.domain) || !item.domain.includes('.')) throw new Error('OCR domain format');
+    return item.domain.toLowerCase();
+  });
   const status = body.status as BrandOCRResult['status'];
   return {
     status, candidates: status === 'ok' ? candidates : [],
-    message: typeof body.message === 'string' && body.message.trim() ? body.message
+    printedDomains: status === 'ok' ? [...new Set(printedDomains)] : [],
+    message: (typeof body.message === 'string' && body.message.trim() ? body.message
       : status !== 'ok' ? 'AI가 사진을 처리하지 못했어요. 다시 시도하거나 상표명을 직접 입력해 주세요.'
-      : candidates.length ? CONFIRM_MESSAGE : '사진에서 상표를 찾지 못했어요. 다시 촬영하거나 상표명을 직접 입력해 주세요.',
+      : candidates.length ? CONFIRM_MESSAGE : printedDomains.length
+        ? '상표명은 없지만 인쇄 주소를 읽었어요. 계속하면 QR 주소와 비교해요.'
+        : '사진에서 상표를 찾지 못했어요. 다시 촬영하거나 상표명을 직접 입력해 주세요.')
+      + (status === 'ok' && printedDomains.length ? '\n인쇄 주소: ' + printedDomains.join(', ') : ''),
   };
 }
 
 export async function readBrandsFromPhoto(imageBase64: string): Promise<BrandOCRResult> {
   const fail = (status: 'invalid_image' | 'unavailable', message: string): BrandOCRResult =>
-    ({ status, candidates: [], message });
+    ({ status, candidates: [], printedDomains: [], message });
   const base64 = imageBase64.replace(/^data:image\/(jpeg|png|webp);base64,/i, '');
   // A phone file URI or a QR target URL cannot be used as an AI image URL.
   if (base64.length < 16 || base64.length > MAX_BASE64_CHARS || base64.length % 4 !== 0 ||

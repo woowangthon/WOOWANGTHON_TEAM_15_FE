@@ -3,7 +3,7 @@ import { Alert, Linking, Platform, Pressable, ScrollView, StatusBar, StyleSheet,
 
 import type { AnalyzeOutcome, PhotoNote } from '../api/analyze';
 import type { AnalyzeResponse } from '../api/types';
-import { buildVerdict, type CheckTone, type Tone } from './verdict';
+import { buildVerdict, checkStatusLabel, type CheckTone, type Tone } from './verdict';
 
 const TONE_COLORS: Record<Tone, { bg: string; fg: string; border: string }> = {
   danger: { bg: '#FDECEC', fg: '#B42318', border: '#F5B5B0' },
@@ -11,12 +11,13 @@ const TONE_COLORS: Record<Tone, { bg: string; fg: string; border: string }> = {
   unknown: { bg: '#EEF1F6', fg: '#3D4A63', border: '#C9D1DE' },
   low: { bg: '#E7F6EE', fg: '#1D6B43', border: '#A9DCC0' },
 };
-const CHECK_MARKS: Record<CheckTone, { mark: string; color: string; label: string }> = {
-  danger: { mark: '!', color: '#B42318', label: '위험' },
-  caution: { mark: '!', color: '#B26A00', label: '주의' },
-  ok: { mark: '✓', color: '#1D6B43', label: '이상 없음' },
-  unknown: { mark: '?', color: '#6B778C', label: '확인 불가' },
-  info: { mark: 'i', color: '#2256CF', label: '참고' },
+const CHECK_MARKS: Record<CheckTone, { mark: string; color: string }> = {
+  danger: { mark: '!', color: '#B42318' },
+  caution: { mark: '!', color: '#B26A00' },
+  ok: { mark: '✓', color: '#1D6B43' },
+  unknown: { mark: '?', color: '#6B778C' },
+  info: { mark: 'i', color: '#2256CF' },
+  not_checked: { mark: '−', color: '#6B778C' },
 };
 
 type Props = { outcome: AnalyzeOutcome; onRescan: () => void };
@@ -52,7 +53,7 @@ function PhotoCard({ photo }: { photo: PhotoNote }) {
     ].filter(Boolean);
     body = parts.join('\n');
   } else if (photo.kind === 'none') {
-    body = '사진에서 등록된 상표명을 찾지 못했어요. 상표를 별도로 입력하지 않았다면 상표 비교는 수행하지 않았어요.';
+    body = '사진에서 상표명을 읽지 못했어요. QR 주소의 공식 여부는 AI 웹 검색으로 별도 확인해요.';
   } else {
     body = `사진에서 상표 찾기를 건너뛰었어요. ${photo.reason} QR 주소 검사는 그대로 했어요.`;
   }
@@ -77,9 +78,10 @@ function AnalysisResult({ data, brandTexts, photo, onRescan }: { data: AnalyzeRe
         <Text style={[styles.bannerTitle, { color: colors.fg }]}>{verdict.title}</Text>
         <Text style={[styles.bannerSummary, { color: colors.fg }]}>{verdict.summary}</Text>
         <Text style={styles.score}>
-          위험 점수 {verdict.score === null ? '산출 불가' : `${verdict.score}점`}
-          <Text style={styles.scoreNote}>  {data.verdict ? '(주소·상표·페이지 내용·인증서·도메인 종합)' : '(AI 내용 분석·인증서·도메인 생성일 기준)'}</Text>
+          {verdict.scoreLabel}
+          <Text style={styles.scoreNote}>  {data.score_scope === 'tls_domain_age' ? '(주소·상표·인증서·도메인 기준)' : data.verdict ? '(주소·상표·페이지 내용·인증서·도메인 종합)' : '(AI 내용 분석·인증서·도메인 생성일 기준)'}</Text>
         </Text>
+        {verdict.assessmentNote && <Text style={styles.aiNote}>{verdict.assessmentNote}</Text>}
       </View>
 
       <View style={styles.card}>
@@ -121,13 +123,14 @@ function AnalysisResult({ data, brandTexts, photo, onRescan }: { data: AnalyzeRe
         </Pressable>
         {showDetails && verdict.checks.map((check) => {
           const mark = CHECK_MARKS[check.tone];
+          const statusLabel = checkStatusLabel(check);
           return (
-            <View key={check.key} style={styles.checkRow} accessible accessibilityLabel={`${check.label}: ${mark.label}. ${check.detail}`}>
+            <View key={check.key} style={styles.checkRow} accessible accessibilityLabel={`${check.label}: ${statusLabel}. ${check.detail}`}>
               <View style={[styles.checkMark, { borderColor: mark.color }]}>
                 <Text style={[styles.checkMarkText, { color: mark.color }]}>{mark.mark}</Text>
               </View>
               <View style={styles.checkBody}>
-                <Text style={styles.checkLabel}>{check.label} <Text style={{ color: mark.color }}>· {mark.label}</Text></Text>
+                <Text style={styles.checkLabel}>{check.label} <Text style={{ color: mark.color }}>· {statusLabel}</Text></Text>
                 <Text style={styles.checkDetail}>{check.detail}</Text>
               </View>
             </View>

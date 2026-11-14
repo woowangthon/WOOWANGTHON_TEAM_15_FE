@@ -25,3 +25,27 @@ export async function photoForOcr(uri: string): Promise<string | null> {
     context.release();
   }
 }
+
+
+/** A separate high-resolution upload for exact QR decoding; OCR keeps its own 1600px input. */
+export async function photoForQR(uri: string): Promise<string | null> {
+  if (!/^(file|content):\/\//i.test(uri)) return null;
+  const context = ImageManipulator.manipulate(uri);
+  try {
+    const original = await context.renderAsync();
+    const {width, height} = original;
+    original.release();
+    for (const [side, compress] of [[3200, 0.9], [2200, 0.75]]) {
+      context.reset();
+      if (Math.max(width, height) > side)
+        context.resize(width >= height ? {width: side} : {height: side});
+      const image = await context.renderAsync();
+      try {
+        const saved = await image.saveAsync({base64: true, compress, format: SaveFormat.JPEG});
+        if (saved.base64 && saved.base64.length <= 4 * 1024 * 1024) return saved.base64;
+      } finally { image.release(); }
+    }
+    return null;
+  } catch { return null; }
+  finally { context.release(); }
+}

@@ -1,7 +1,7 @@
 import type { AnalyzeResponse } from './types.ts';
 
-// Page fetch (up to 18s) + AI call can take a while; give up after this.
-const TIMEOUT_MS = 90_000;
+// Metadata/page inspection + behavior AI + bounded official-domain web search + explanation.
+const TIMEOUT_MS = 120_000;
 
 // What the optional QR-photo lookup (brand candidates) found, so the result screen can say so,
 // including when it found nothing or had to be skipped.
@@ -16,7 +16,7 @@ export type AnalyzeOutcome =
   | { kind: 'not_url'; raw: string }
   | { kind: 'error'; raw: string; message: string };
 
-export type AnalyzeOptions = { brandTexts?: string[]; storeId?: string | null };
+export type AnalyzeOptions = { brandTexts?: string[]; printedDomains?: string[]; storeId?: string | null };
 
 export async function analyzeQr(raw: string, url: string | null, options: AnalyzeOptions = {}): Promise<AnalyzeOutcome> {
   // Plain-text QR payloads never reach the server: the API only accepts HTTP(S) URLs.
@@ -37,6 +37,7 @@ export async function analyzeQr(raw: string, url: string | null, options: Analyz
       body: JSON.stringify({
         qr_text: url,
         brand_texts: options.brandTexts ?? [],
+        printed_domains: options.printedDomains ?? [],
         store_id: options.storeId ?? null,
         include_ai: true,
         inspect_page: true,

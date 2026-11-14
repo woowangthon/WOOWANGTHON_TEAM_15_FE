@@ -16,7 +16,8 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.hjc1980.WOOWANGTHON_TEAM_15_FE"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -31,6 +32,11 @@
           "backgroundColor": "#2256CF"
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "bcd392b1-3149-4c53-803b-a0d9b7599c4c"
+      }
+    }
   }
 }
